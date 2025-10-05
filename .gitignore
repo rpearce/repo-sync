@@ -1,0 +1,10 @@
+# rustfmt tmp files
+**/*.rs.bk
+
+# usual rust dirs
+debug/
+target/
+
+# example rules
+example/repos/*
+!example/repos/.keep
