@@ -1,7 +1,14 @@
 use clap::Command;
+use std::process;
 
 mod commands;
+mod config;
+mod error;
 mod git;
+mod repo_list;
+mod utils;
+
+use config::Config;
 
 /// Entry point for the repo-sync CLI.
 ///
@@ -27,17 +34,26 @@ fn main() {
         .subcommand(commands::sync::command())
         .get_matches();
 
-    match matches.subcommand() {
+    let result = match matches.subcommand() {
         Some(("clone", sub_m)) => {
             let file = sub_m.get_one::<String>("file").unwrap();
             let out = sub_m.get_one::<String>("out").unwrap();
-            commands::clone::run(file, out);
+            let verbose = sub_m.get_flag("verbose");
+            let config = Config::new(file, out).with_verbose(verbose);
+            commands::clone::run(&config)
         }
         Some(("sync", sub_m)) => {
             let file = sub_m.get_one::<String>("file").unwrap();
             let out = sub_m.get_one::<String>("out").unwrap();
-            commands::sync::run(file, out);
+            let verbose = sub_m.get_flag("verbose");
+            let config = Config::new(file, out).with_verbose(verbose);
+            commands::sync::run(&config)
         }
         _ => unreachable!("Subcommand required"),
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        process::exit(1);
     }
 }

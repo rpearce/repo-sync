@@ -3,7 +3,11 @@ use std::fs;
 use clap;
 use rayon::prelude::*;
 
+use crate::config::Config;
+use crate::error::{RepoSyncError, Result};
 use crate::git::clone_repo;
+use crate::repo_list::parse_repo_file;
+use crate::utils::output::RepoStatusPrinter;
 
 /// Returns the `clap::Command` spec for the `clone` subcommand.
 pub fn command() -> clap::Command {
@@ -23,13 +27,53 @@ pub fn command() -> clap::Command {
                 .help("Output directory")
                 .required(true),
         )
+        .arg(
+            clap::Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Enable verbose output")
+                .action(clap::ArgAction::SetTrue),
+        )
 }
 
 /// Runs the `clone` command.
-pub fn run(file: &str, out: &str) {
-    let content = fs::read_to_string(file).expect("Failed to read repo list file");
-    let repos: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+pub fn run(config: &Config) -> Result<()> {
+    // Ensure output directory exists
+    fs::create_dir_all(&config.output_dir).map_err(|e| {
+        RepoSyncError::directory(
+            config.output_dir.display().to_string(),
+            format!("Failed to create output directory: {}", e)
+        )
+    })?;
 
-    println!("Cloning {} repositories into {}", repos.len(), out);
-    repos.par_iter().for_each(|url| clone_repo(url, out));
+    // Read and parse repository list
+    let repos = parse_repo_file(config.repos_file_str()?)?;
+    let printer = RepoStatusPrinter::new(config);
+
+    printer.summary("Cloning", repos.len(), config.output_dir_str()?);
+
+    // Clone repositories with simplified error handling
+    let failed_count = repos
+        .par_iter()
+        .map(|url| {
+            match config.output_dir_str() {
+                Ok(output_dir) => {
+                    if let Err(e) = clone_repo(url, output_dir, config) {
+                        eprintln!("Error cloning {}: {}", url, e);
+                        1
+                    } else {
+                        0
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error with output directory path: {}", e);
+                    1
+                }
+            }
+        })
+        .sum::<usize>();
+
+    printer.final_summary("clone", failed_count, repos.len());
+
+    Ok(())
 }
