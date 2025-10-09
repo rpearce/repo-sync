@@ -1,134 +1,113 @@
-use std::{fs, path, process};
-
-use crate::config::Config;
-use crate::error::{RepoSyncError, Result};
-use crate::utils::path::extract_repo_name;
-use crate::utils::output::RepoStatusPrinter;
+use std::{io, path, process};
 
 /// Clone a Git repository from `url` into `path`.
-/// - `url`: pre-validated repository URL
+/// - `url`: repository URL
 /// - `path`: local target directory
-pub fn git_clone(url: &str, path: &str) -> Result<()> {
-    // Ensure parent directory exists
-    if let Some(parent) = path::Path::new(path).parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            RepoSyncError::directory(
-                parent.to_string_lossy(),
-                format!("Failed to create parent directory: {}", e)
-            )
-        })?;
-    }
-
+pub fn git_clone(url: &str, path: &str) -> io::Result<()> {
     // Spawn a `git clone <url> <path>` process and wait for it to finish
-    let output = process::Command::new("git")
+    let status = process::Command::new("git")
         .arg("clone")
         .arg(url)
         .arg(path)
-        .output()?;
+        .status()?;
 
-    if output.status.success() {
+    if status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(RepoSyncError::git(
-            "clone",
-            format!("Failed to clone {}: {}", url, stderr.trim())
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("git clone failed for {}", url),
         ))
     }
 }
 
 /// Pull updates in the Git repository at `path`.
 /// - `path`: local repository directory
-pub fn git_pull(path: &str) -> Result<()> {
-    // Verify path exists and is a directory
-    if !path::Path::new(path).is_dir() {
-        return Err(RepoSyncError::directory(path, "Path does not exist or is not a directory"));
-    }
-
+pub fn git_pull(path: &str) -> io::Result<()> {
     // Spawn a `git -C <path> pull` process to pull the latest changes
     // `-C <path>` tells Git to operate in the specified directory
-    let output = process::Command::new("git")
+    let status = process::Command::new("git")
         .arg("-C")
         .arg(path)
         .arg("pull")
-        .output()?;
+        .status()?;
 
-    if output.status.success() {
+    if status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(RepoSyncError::git(
-            "pull",
-            format!("Failed to pull in {}: {}", path, stderr.trim())
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("git pull failed in {}", path),
         ))
     }
 }
 
 /// Clone a repository only if it doesn't already exist.
-/// - `url`: pre-validated repository URL
+/// - `url`: repository URL
 /// - `base_dir`: directory where the repo should be cloned
-/// - `config`: configuration including verbose mode
-pub fn clone_repo(url: &str, base_dir: &str, config: &Config) -> Result<()> {
-    let name = extract_repo_name(url)?;
+pub fn clone_repo(url: &str, base_dir: &str) {
+    let url = normalize_url(url);
+    let name = url.split('/').last().unwrap().replace(".git", "");
     let path = path::Path::new(base_dir).join(&name);
-    let printer = RepoStatusPrinter::new(config);
 
     if path.exists() {
-        printer.skipped(&name, "already exists");
-        Ok(())
+        println!("Skipping {}, already exists", name);
     } else {
-        let path_str = path.to_str().ok_or_else(|| {
-            RepoSyncError::config(format!(
-                "Repository path contains invalid UTF-8: {}",
-                path.display()
-            ))
-        })?;
-        git_clone(url, path_str)?;
-        printer.cloned(&name);
-        Ok(())
+        if let Err(e) = git_clone(&url, path.to_str().unwrap()) {
+            eprintln!("Error cloning {}: {}", url, e);
+        }
     }
 }
 
 /// Sync a repository at `url` into `base_dir`: clone if missing, otherwise pull updates.
-/// - `url`: pre-validated repository URL
+/// - `url`: repository URL (partial URLs are prefixed with https://)
 /// - `base_dir`: local directory for repositories
-/// - `config`: configuration including verbose mode
-pub fn sync_repo(url: &str, base_dir: &str, config: &Config) -> Result<()> {
-    // Step 1: Determine the repository name from the URL
-    let name = extract_repo_name(url)?;
-    let printer = RepoStatusPrinter::new(config);
+pub fn sync_repo(url: &str, base_dir: &str) {
+    // Step 1: Normalize the URL to ensure it has a protocol (https://)
+    let url = normalize_url(url);
 
-    // Step 2: Construct the full local path for this repository
-    let path = path::Path::new(base_dir).join(&name);
+    // Step 2: Determine the repository name from the URL
+    // Example: "https://github.com/user/repo.git" -> "repo"
+    let name = url.split("/").last().unwrap().replace(".git", "");
 
-    // Step 3: Check if the repository already exists locally
+    // Step 3: Construct the full local path for this repository
+    // Example: base_dir="/home/user/repos", name="repo" -> "/home/user/repos/repo"
+    let path = path::Path::new(base_dir).join(name);
+
+    // Step 4: Check if the repository already exists locally
     if path.exists() {
-        let path_str = path.to_str().ok_or_else(|| {
-            RepoSyncError::config(format!(
-                "Repository path contains invalid UTF-8: {}",
-                path.display()
-            ))
-        })?;
-        git_pull(path_str)?;
-        sync_repo_branches(path_str, config)?;
-        printer.synced(&name);
+        if let Err(e) = git_pull(path.to_str().unwrap()) {
+            eprintln!("Error pulling {}: {}", url, e)
+        }
+        if let Err(e) = sync_repo_branches(path.to_str().unwrap()) {
+            eprintln!("Error syncing branches in {}: {}", url, e);
+        }
     } else {
-        let path_str = path.to_str().ok_or_else(|| {
-            RepoSyncError::config(format!(
-                "Repository path contains invalid UTF-8: {}",
-                path.display()
-            ))
-        })?;
-        git_clone(url, path_str)?;
-        printer.cloned(&name);
+        if let Err(e) = git_clone(&url, path.to_str().unwrap()) {
+            eprintln!("Error cloning {}: {}", url, e)
+        }
     }
-    Ok(())
+}
+
+/// Normalize a repository URL to always use HTTPS.
+/// - `url`: URL
+fn normalize_url(url: &str) -> String {
+    // Remove leading "http://" if present
+    let url = url.strip_prefix("http://").unwrap_or(url);
+
+    // If it already starts with "https://", leave it
+    if url.starts_with("https://") {
+        url.to_string()
+    } else {
+        // Otherwise, prepend "https://"
+        format!("https://{}", url)
+    }
 }
 
 /// Synchronize all local branches in the repository at `path` with their upstreams.
 /// - Current branch: fast-forward merge if working tree is clean
 /// - Other branches: update directly from upstream without checkout
-pub fn sync_repo_branches(path: &str, config: &Config) -> Result<()> {
+pub fn sync_repo_branches(path: &str) -> io::Result<()> {
     // Step 1: Determine the current branch name
     // `git rev-parse --abbrev-ref HEAD` returns the branch currently checked out
     let current_branch_output = process::Command::new("git")
@@ -155,9 +134,9 @@ pub fn sync_repo_branches(path: &str, config: &Config) -> Result<()> {
         .status()?;
 
     if !status_output.success() {
-        return Err(RepoSyncError::git(
-            "fetch",
-            format!("git fetch --all failed in {}", path)
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("git fetch --all failed in {}", path),
         ));
     }
 
@@ -200,44 +179,27 @@ pub fn sync_repo_branches(path: &str, config: &Config) -> Result<()> {
 
             if clean {
                 // Safe fast-forward merge from upstream branch
-                let merge_result = process::Command::new("git")
+                let _ = process::Command::new("git")
                     .arg("-C")
                     .arg(path)
                     .arg("merge")
                     .arg("--ff-only")
                     .arg(upstream)
                     .status();
-
-                if let Err(e) = merge_result {
-                    eprintln!("Warning: Failed to merge {} from {}: {}", local, upstream, e);
-                } else if let Ok(status) = merge_result {
-                    if !status.success() {
-                        eprintln!("Warning: Git merge failed for branch {} from {}", local, upstream);
-                    }
-                }
             } else {
                 // Working tree dirty: skip merge to avoid conflicts
-                let printer = RepoStatusPrinter::new(config);
-                printer.skip_merge(local, "dirty branch");
+                println!("Skipping merge on {} (dirty branch)", local);
             }
         } else {
             // Non-current branch: update directly from upstream without checkout
             // Equivalent to: `git fetch . <upstream>:<local>`
-            let fetch_result = process::Command::new("git")
+            let _ = process::Command::new("git")
                 .arg("-C")
                 .arg(path)
                 .arg("fetch")
                 .arg(".")
                 .arg(format!("{}:{}", upstream, local))
                 .status();
-
-            if let Err(e) = fetch_result {
-                eprintln!("Warning: Failed to update branch {} from {}: {}", local, upstream, e);
-            } else if let Ok(status) = fetch_result {
-                if !status.success() {
-                    eprintln!("Warning: Git fetch failed for branch {} from {}", local, upstream);
-                }
-            }
         }
     }
 
