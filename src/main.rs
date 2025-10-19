@@ -3,6 +3,7 @@ use clap::Command;
 mod commands;
 mod config;
 mod git;
+mod utils;
 
 use config::Config;
 

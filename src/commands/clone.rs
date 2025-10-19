@@ -1,10 +1,11 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use clap;
 use rayon::prelude::*;
 
 use crate::config::Config;
-use crate::git::clone_repo;
+use crate::git::clone::git_clone;
+use crate::utils::url::normalize;
 
 /// Returns the `clap::Command` spec for the `clone` subcommand.
 pub fn command() -> clap::Command {
@@ -31,6 +32,23 @@ pub fn command() -> clap::Command {
                 .help("Enable verbose output")
                 .action(clap::ArgAction::SetTrue),
         )
+}
+
+/// Clone a repository only if it doesn't already exist.
+/// - `url`: repository URL
+/// - `base_dir`: directory where the repo should be cloned
+pub fn clone_repo(url: &str, config: &Config) {
+    let url = normalize(url);
+    let name = url.split('/').next_back().unwrap().replace(".git", "");
+    let path = Path::new(&config.output_dir).join(&name);
+
+    if path.exists() {
+        if config.verbose {
+            println!("Skipping {}, already exists", name);
+        }
+    } else if let Err(e) = git_clone(&url, &path, config) {
+        eprintln!("Error cloning {}: {}", url, e);
+    }
 }
 
 /// Runs the `clone` command.

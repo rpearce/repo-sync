@@ -4,7 +4,7 @@ use clap;
 use rayon::prelude::*;
 
 use crate::config::Config;
-use crate::git::sync_repo;
+use crate::git::sync::sync_repo;
 
 /// Returns the `clap::Command` spec for the `sync` subcommand.
 pub fn command() -> clap::Command {
