@@ -3,6 +3,7 @@ use std::fs;
 use clap;
 use rayon::prelude::*;
 
+use crate::config::Config;
 use crate::git::clone_repo;
 
 /// Returns the `clap::Command` spec for the `clone` subcommand.
@@ -23,13 +24,27 @@ pub fn command() -> clap::Command {
                 .help("Output directory")
                 .required(true),
         )
+        .arg(
+            clap::Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Enable verbose output")
+                .action(clap::ArgAction::SetTrue),
+        )
 }
 
 /// Runs the `clone` command.
-pub fn run(file: &str, out: &str) {
-    let content = fs::read_to_string(file).expect("Failed to read repo list file");
+pub fn run(config: &Config) {
+    let content = fs::read_to_string(&config.repos_file).expect("Failed to read repo list file");
     let repos: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
-    println!("Cloning {} repositories into {}", repos.len(), out);
-    repos.par_iter().for_each(|url| clone_repo(url, out));
+    if config.verbose {
+        println!(
+            "Cloning {} repositories into {:?}",
+            repos.len(),
+            &config.output_dir
+        );
+    }
+
+    repos.par_iter().for_each(|url| clone_repo(url, config));
 }
