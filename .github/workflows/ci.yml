@@ -1,8 +1,13 @@
-n0ame: CI
+name: CI
 
 on:
-  push:
   pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+  push:
+    branches:
+      - main
 
 jobs:
   build-and-test:
