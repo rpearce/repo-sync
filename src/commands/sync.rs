@@ -34,6 +34,7 @@ pub fn command() -> clap::Command {
 }
 
 /// Runs the `sync` command.
+/// - `config`: command configuration
 pub fn run(config: &Config) {
     let content = fs::read_to_string(&config.repos_file).expect("Failed to read repo list file");
     let repos: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();

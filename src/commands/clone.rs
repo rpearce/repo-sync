@@ -37,6 +37,7 @@ pub fn command() -> clap::Command {
 /// Clone a repository only if it doesn't already exist.
 /// - `url`: repository URL
 /// - `base_dir`: directory where the repo should be cloned
+/// - `config`: command configuration
 pub fn clone_repo(url: &str, config: &Config) {
     let url = normalize(url);
     let name = url.split('/').next_back().unwrap().replace(".git", "");
@@ -52,6 +53,7 @@ pub fn clone_repo(url: &str, config: &Config) {
 }
 
 /// Runs the `clone` command.
+/// - `config`: command configuration
 pub fn run(config: &Config) {
     let content = fs::read_to_string(&config.repos_file).expect("Failed to read repo list file");
     let repos: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
