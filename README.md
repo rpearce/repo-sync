@@ -116,6 +116,45 @@ main
 
 ## Installation
 
+### From GitHub Releases (Recommended)
+
+Download the latest binary for your platform from the [releases page](https://github.com/rpearce/repo-sync/releases):
+
+**Linux x86_64:**
+```bash
+mkdir -p ~/.local/bin
+curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-linux-x86_64.tar.gz | tar -xzf -
+mv repo-sync ~/.local/bin/
+```
+
+**Linux x86_64 (musl/static):**
+```bash
+mkdir -p ~/.local/bin
+curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-linux-musl-x86_64.tar.gz | tar -xzf -
+mv repo-sync ~/.local/bin/
+```
+
+**macOS (Intel):**
+```bash
+mkdir -p ~/.local/bin
+curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-macos-x86_64.tar.gz | tar -xzf -
+mv repo-sync ~/.local/bin/
+```
+
+**macOS (Apple Silicon):**
+```bash
+mkdir -p ~/.local/bin
+curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-macos-aarch64.tar.gz | tar -xzf -
+mv repo-sync ~/.local/bin/
+```
+
+**Note:** Make sure `~/.local/bin` is in your PATH. Add this to your shell config (`~/.bashrc`, `~/.zshrc`, etc.):
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### From Source
+
 Using Cargo:
 
 ```bash
