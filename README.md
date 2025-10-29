@@ -205,8 +205,8 @@ Repo lines can be prefixed with `https://` and/or end with `.git`, if preferred.
 
 To create a new release:
 
-1. Update `CHANGELOG.md` with changes
-2. Run `./release <version>` (e.g., `./release 1.0.0`)
-3. Push: `git push origin main && git push origin <version>`
+1. Run `./release <version>` (e.g., `./release 1.0.0`)
+2. Create and merge a pull request with the version bump
+3. After PR is merged: `git switch main && git pull && git push origin <version>`
 
-GitHub Actions will automatically build and publish binaries for Linux and macOS.
+GitHub Actions will automatically build and publish binaries for Linux and macOS with auto-generated release notes.
