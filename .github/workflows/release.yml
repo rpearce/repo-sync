@@ -49,6 +49,6 @@ jobs:
           cp CHANGELOG.md dist/ 2>/dev/null || true
           cd dist && tar czf ../${{ matrix.name }} *
 
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.name }}
