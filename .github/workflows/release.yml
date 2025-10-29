@@ -1,0 +1,51 @@
+name: release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build:
+    name: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: repo-sync-linux-x86_64.tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: repo-sync-linux-musl-x86_64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: repo-sync-macos-x86_64.tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: repo-sync-macos-aarch64.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/repo-sync dist/
+          cp CHANGELOG.md dist/ 2>/dev/null || true
+          cd dist && tar czf ../${{ matrix.name }} *
+
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.name }}
