@@ -161,3 +161,13 @@ github.com/user/repo3
 ```
 
 Repo lines can be prefixed with `https://` and/or end with `.git`, if preferred.
+
+## Releases
+
+To create a new release:
+
+1. Update `CHANGELOG.md` with changes
+2. Run `./release <version>` (e.g., `./release 1.0.0`)
+3. Push: `git push origin main && git push origin <version>`
+
+GitHub Actions will automatically build and publish binaries for Linux and macOS.
