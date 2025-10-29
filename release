@@ -30,7 +30,7 @@ echo "Running tests..."
 cargo test
 
 echo "Creating git tag $VERSION..."
-git add Cargo.toml
+git add Cargo.toml Cargo.lock
 
 # Only commit if there are changes
 if ! git diff --cached --quiet; then

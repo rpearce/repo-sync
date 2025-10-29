@@ -46,9 +46,9 @@ jobs:
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/repo-sync dist/
-          cp CHANGELOG.md dist/ 2>/dev/null || true
           cd dist && tar czf ../${{ matrix.name }} *
 
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.name }}
+          generate_release_notes: true
