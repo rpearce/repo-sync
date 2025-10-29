@@ -6,17 +6,17 @@ set -euo pipefail
 # Example: ./release 0.2.0
 
 if [ $# -ne 1 ]; then
-    echo "Usage: $0 <version>"
-    echo "Example: $0 0.2.0"
-    exit 1
+  echo "Usage: $0 <version>"
+  echo "Example: $0 0.2.0"
+  exit 1
 fi
 
 VERSION="$1"
 
 # Validate version format
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "Error: Version must be in format X.Y.Z (e.g., 1.0.0)"
-    exit 1
+  echo "Error: Version must be in format X.Y.Z (e.g., 1.0.0)"
+  exit 1
 fi
 
 echo "Preparing release $VERSION..."
@@ -31,7 +31,17 @@ cargo test
 
 echo "Creating git tag $VERSION..."
 git add Cargo.toml
-git commit -m "Release $VERSION"
-git tag "$VERSION"
+
+# Only commit if there are changes
+if ! git diff --cached --quiet; then
+  git commit -m "Release $VERSION"
+fi
+
+# Create tag if it doesn't exist
+if git tag -l | grep -q "^$VERSION$"; then
+  echo "Tag $VERSION already exists"
+else
+  git tag -a "$VERSION" -m "Release $VERSION"
+fi
 
 echo "Push with: git push origin main && git push origin $VERSION"
