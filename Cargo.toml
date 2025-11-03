@@ -4,5 +4,5 @@ version = "0.1.2"
 edition = "2024"
 
 [dependencies]
-clap = "4.5.50"
+clap = "4.5.51"
 rayon = "1.11.0"
