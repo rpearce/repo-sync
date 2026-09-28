@@ -207,6 +207,36 @@ fn sync_never_operates_on_enclosing_repo() {
     );
 }
 
+/// Directory-name collisions must be caught through `sync` the same way
+/// they are through `clone` — both share `partition_collisions` (see
+/// `tests/cli.rs`'s `duplicate_repo_names_are_reported_not_raced`), and
+/// this pins that wiring so a future refactor can't silently reintroduce
+/// the race for `sync` alone.
+#[test]
+fn sync_reports_duplicate_repo_names_instead_of_racing() {
+    let env = TestEnv::new();
+    let remote_a = env.bare_remote("a/dotfiles");
+    let remote_b = env.bare_remote("b/dotfiles");
+    let url_a = env.file_url(&remote_a);
+    let url_b = env.file_url(&remote_b);
+    let repos = env.repos_file("repos.txt", &[&url_a, &url_b]);
+    let out = env.root().join("out");
+
+    let assert = env.run("sync", &repos, &out).failure().code(1);
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains(&format!(
+            "'dotfiles' is used by multiple entries: {url_a}, {url_b}"
+        )),
+        "stderr must name both colliding entries, got: {stderr:?}"
+    );
+    assert!(
+        !out.join("dotfiles").exists(),
+        "colliding entries must not create out/dotfiles"
+    );
+}
+
 /// `sync` must never delete a local tag that was never pushed to the
 /// remote. Regression test for the bug where `git fetch --all -Pp`
 /// includes `--prune-tags`, which deletes any local tag the remote

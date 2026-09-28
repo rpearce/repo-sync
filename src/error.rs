@@ -22,16 +22,37 @@ pub enum RepoError {
     /// silently operate on whatever *enclosing* repository it walks up
     /// to find instead.
     NotAGitRepository { path: PathBuf },
-    /// Two or more repo-list entries derive the same directory name (e.g.
-    /// `.../a/dotfiles` and `.../b/dotfiles` both resolve to
+    /// Two or more *different* normalized URLs derive the same directory
+    /// name (e.g. `.../a/dotfiles` and `.../b/dotfiles` both resolve to
     /// `<out>/dotfiles`). Detected up front, before the parallel
     /// clone/sync phase, instead of letting the entries race to write the
-    /// same path; none of `entries` are run. `entries` are the colliding
-    /// repo-list entries, as normalized URLs. One `DuplicateName` is
-    /// produced per colliding entry (see
-    /// `crate::commands::partition_collisions`), so all of them share
-    /// this exact message.
+    /// same path; none of them are run. `entries` names every entry in
+    /// the collision, as normalized URLs (see
+    /// `crate::utils::url::normalize`) — matching entries that normalize
+    /// to the exact same URL are a separate, non-error case (a warning;
+    /// see `crate::commands::partition_collisions`), not a
+    /// `DuplicateName`. One `DuplicateName` is produced per *collision*,
+    /// not per colliding entry; see `failed_entries` for how `report`
+    /// still counts every named entry toward the failed total.
     DuplicateName { name: String, entries: Vec<String> },
+}
+
+impl RepoError {
+    /// How many repo-list entries this failure represents, for
+    /// `crate::commands::report`'s failed count. Every variant is one
+    /// entry's own failure (1), except `DuplicateName`:
+    /// `crate::commands::partition_collisions` emits exactly one of those
+    /// per *collision* (not per colliding entry), so its weight is the
+    /// number of entries it names instead.
+    pub(crate) fn failed_entries(&self) -> usize {
+        match self {
+            RepoError::DuplicateName { entries, .. } => entries.len(),
+            RepoError::Clone { .. }
+            | RepoError::Sync { .. }
+            | RepoError::NoDirectoryName { .. }
+            | RepoError::NotAGitRepository { .. } => 1,
+        }
+    }
 }
 
 impl fmt::Display for RepoError {
@@ -66,5 +87,36 @@ impl std::error::Error for RepoError {
             | RepoError::NotAGitRepository { .. }
             | RepoError::DuplicateName { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_entries_is_one_for_ordinary_failures() {
+        let clone_err = RepoError::Clone {
+            url: "https://host/r".to_string(),
+            source: io::Error::other("boom"),
+        };
+        let no_name_err = RepoError::NoDirectoryName {
+            entry: "https://host/".to_string(),
+        };
+        assert_eq!(clone_err.failed_entries(), 1);
+        assert_eq!(no_name_err.failed_entries(), 1);
+    }
+
+    #[test]
+    fn failed_entries_counts_every_entry_named_in_a_collision() {
+        let err = RepoError::DuplicateName {
+            name: "dotfiles".to_string(),
+            entries: vec![
+                "https://host/a/dotfiles".to_string(),
+                "https://host/b/dotfiles".to_string(),
+                "https://host/c/dotfiles".to_string(),
+            ],
+        };
+        assert_eq!(err.failed_entries(), 3);
     }
 }

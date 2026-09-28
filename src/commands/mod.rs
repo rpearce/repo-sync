@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::{fs, process::ExitCode};
 
 use crate::config::Config;
@@ -27,13 +27,28 @@ pub(crate) fn read_repo_list(config: &Config) -> Result<String, ExitCode> {
 /// Shared by `clone::run` and `sync::run` so this logic lives in exactly
 /// one place.
 ///
-/// Two or more entries that derive the same directory name (see
-/// `crate::utils::url::repo_name`) would otherwise race to clone/sync
-/// into the same path, with the winner decided nondeterministically by
-/// whichever one gets there first (see expert evidence B6). Checking this
-/// up front, before the parallel phase, makes the outcome deterministic
-/// instead: every entry sharing a contested name is reported as a
-/// failure and none of them run, while every other entry still does.
+/// Two passes happen before the parallel phase, both on each entry's
+/// **normalized** URL (see `crate::utils::url::normalize`) rather than
+/// its raw repo-list text, matching the convention `RepoError::Clone`,
+/// `RepoError::Sync` and `RepoError::NoDirectoryName` already follow for
+/// their own messages:
+///
+/// 1. **Exact duplicates.** Two entries that normalize to the identical
+///    URL aren't a collision between two different repositories — they
+///    name the same one twice (e.g. one bare `host/owner/repo` line and
+///    an `http://` line that upgrades to a URL the other side already
+///    uses). The first occurrence is kept; every repeat is dropped and
+///    reported with a warning to stderr (a warning, so it never changes
+///    the exit code), and doesn't count toward the run's totals at all.
+/// 2. **Directory-name collisions.** Among what's left, two or more
+///    *different* normalized URLs that derive the same directory name
+///    (see `crate::utils::url::repo_name`) would otherwise race to
+///    clone/sync into the same path, with the winner decided
+///    nondeterministically by whichever one gets there first (see expert
+///    evidence B6). Checking this up front makes the outcome
+///    deterministic instead: every entry sharing a contested name is
+///    folded into one failure and none of them run, while every other
+///    entry still does.
 ///
 /// An entry with no usable directory name at all (`repo_name` returns
 /// `None`) doesn't participate in collision detection here — that's
@@ -41,84 +56,110 @@ pub(crate) fn read_repo_list(config: &Config) -> Result<String, ExitCode> {
 /// it's included in `to_run` and left for them to reject individually.
 ///
 /// Returns `(to_run, failures)`:
-/// - `to_run`: every entry that should still go to the parallel phase, in
-///   original order, minus any colliding entries;
-/// - `failures`: one `RepoError::DuplicateName` per colliding entry (so
-///   each one counts once toward `report`'s failed total), naming, in
-///   its message, every entry that shares that name, as normalized URLs.
-///   All entries in one collision get the identical message; `report`
-///   prints each distinct message only once (see its doc comment).
+/// - `to_run`: every surviving entry that should still go to the
+///   parallel phase, in original order, as its original repo-list text
+///   (not normalized — `clone_repo`/`sync_repo` normalize it themselves);
+/// - `failures`: one `RepoError::DuplicateName` **per collision**, not
+///   per colliding entry — see `RepoError::failed_entries`, which is how
+///   `report` still counts every colliding entry once toward the failed
+///   total even though there's only one `Err` to print.
 /// - `entries`: raw repo-list entries, e.g. from `parse_repo_list`
 pub(crate) fn partition_collisions(entries: &[&str]) -> (Vec<String>, Vec<RepoError>) {
     let normalized: Vec<String> = entries.iter().map(|entry| normalize(entry)).collect();
 
-    let named: Vec<(&str, &str)> = entries
-        .iter()
-        .copied()
-        .zip(&normalized)
-        .filter_map(|(entry, norm)| repo_name(norm).map(|name| (entry, name)))
-        .collect();
-
-    let mut colliding: HashSet<&str> = HashSet::new();
-    let mut failures = Vec::new();
-
-    for (name, group) in find_collisions(&named) {
-        let entries_display: Vec<String> = group.iter().map(|entry| entry.to_string()).collect();
-        for entry in group {
-            colliding.insert(entry);
-            failures.push(RepoError::DuplicateName {
-                name: name.to_string(),
-                entries: entries_display.clone(),
-            });
+    // Keep the first occurrence of each normalized URL; warn about (and
+    // drop) every repeat before it can reach collision detection or the
+    // parallel phase.
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut unique_indices: Vec<usize> = Vec::new();
+    for (i, norm) in normalized.iter().enumerate() {
+        if seen.insert(norm.as_str()) {
+            unique_indices.push(i);
+        } else {
+            eprintln!("warning: duplicate entry '{norm}' ignored");
         }
     }
 
-    let to_run: Vec<String> = entries
+    // (normalized URL, derived name) pairs, one per surviving entry that
+    // has a usable name.
+    let named: Vec<(&str, &str)> = unique_indices
         .iter()
-        .copied()
-        .filter(|entry| !colliding.contains(*entry))
-        .map(|entry| entry.to_string())
+        .filter_map(|&i| repo_name(&normalized[i]).map(|name| (normalized[i].as_str(), name)))
+        .collect();
+
+    // Maps a surviving entry's normalized URL back to its index, so a
+    // collision (reported by `find_collisions` as normalized-URL
+    // strings) can be traced back to the specific entries to exclude
+    // from `to_run`. Unambiguous because exact duplicates were already
+    // removed above, so every surviving normalized URL is unique.
+    let index_by_norm: HashMap<&str, usize> = unique_indices
+        .iter()
+        .map(|&i| (normalized[i].as_str(), i))
+        .collect();
+
+    let mut colliding: HashSet<usize> = HashSet::new();
+    let mut failures = Vec::new();
+
+    for (name, group) in find_collisions(&named) {
+        for &norm_url in &group {
+            if let Some(&i) = index_by_norm.get(norm_url) {
+                colliding.insert(i);
+            }
+        }
+        failures.push(RepoError::DuplicateName {
+            name: name.to_string(),
+            entries: group
+                .into_iter()
+                .map(|norm_url| norm_url.to_string())
+                .collect(),
+        });
+    }
+
+    let to_run: Vec<String> = unique_indices
+        .into_iter()
+        .filter(|i| !colliding.contains(i))
+        .map(|i| entries[i].to_string())
         .collect();
 
     (to_run, failures)
 }
 
-/// Print each distinct failure message once, then the run's summary
-/// line, and return the resulting process exit code. Shared by
-/// `clone::run` and `sync::run` (and, through them, by
-/// `partition_collisions`'s pre-`par_iter` failures, e.g. a
-/// directory-name collision, which feed into the same `results` slice)
-/// so the summary format and its stdout/stderr routing live in exactly
-/// one place.
+/// Print each failure, then the run's summary line, and return the
+/// resulting process exit code. Shared by `clone::run` and `sync::run`
+/// (and, through them, by `partition_collisions`'s pre-`par_iter`
+/// failures, e.g. a directory-name collision, which feed into the same
+/// `results` slice) so the summary format and its stdout/stderr routing
+/// live in exactly one place.
 ///
-/// Deduplicating by message text (rather than printing every `Err`) is
-/// what keeps a single collision from printing its
-/// `'<name>' is used by multiple entries: ...` message once per colliding
-/// entry: `partition_collisions` gives every entry in one collision the
-/// identical `RepoError::DuplicateName`, and each of those still counts
-/// once toward `failed` below since `results` still holds one `Err` per
-/// entry.
+/// `failed` (and so `total`) sums each error's `RepoError::failed_entries`
+/// weight rather than just counting `Err` results: `partition_collisions`
+/// emits one `RepoError::DuplicateName` per *collision*, standing in for
+/// every entry named in it, so that one `Err` is weighted by how many
+/// entries it represents. This is also why printing every `Err` here
+/// (one `eprintln!` each, no de-duplication) still prints a collision's
+/// message exactly once: there's only one `Err` for it to begin with.
 ///
 /// Per the project's summary rules: success stays silent unless
 /// `verbose` is set (then the summary goes to stdout); any failure
 /// always prints the summary, to stderr, regardless of `verbose`.
 /// - `verb`: past-tense verb for the summary, e.g. `"Cloned"` or `"Synced"`
-/// - `results`: one result per repository processed
+/// - `results`: one result per repository processed, except a
+///   `DuplicateName` result, which represents every entry it names
 /// - `verbose`: whether `-v` was passed
 pub(crate) fn report(verb: &str, results: &[Result<(), RepoError>], verbose: bool) -> ExitCode {
-    let mut printed: HashSet<String> = HashSet::new();
     for result in results {
         if let Err(e) = result {
-            let message = e.to_string();
-            if printed.insert(message.clone()) {
-                eprintln!("{message}");
-            }
+            eprintln!("{e}");
         }
     }
 
-    let total = results.len();
-    let failed = results.iter().filter(|r| r.is_err()).count();
-    let ok = total - failed;
+    let failed: usize = results
+        .iter()
+        .filter_map(|r| r.as_ref().err())
+        .map(RepoError::failed_entries)
+        .sum();
+    let ok = results.iter().filter(|r| r.is_ok()).count();
+    let total = ok + failed;
     let summary = format!("{verb} {total} repositories: {ok} ok, {failed} failed");
 
     if failed > 0 {
@@ -131,4 +172,89 @@ pub(crate) fn report(verb: &str, results: &[Result<(), RepoError>], verbose: boo
     }
 
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partition_collisions_emits_one_duplicate_name_error_per_collision() {
+        let entries = [
+            "https://host/a/dotfiles",
+            "https://host/b/dotfiles",
+            "https://host/other",
+        ];
+
+        let (to_run, failures) = partition_collisions(&entries);
+
+        assert_eq!(to_run, vec!["https://host/other".to_string()]);
+        assert_eq!(
+            failures.len(),
+            1,
+            "one collision must be one error, got {failures:?}"
+        );
+        match &failures[0] {
+            RepoError::DuplicateName { name, entries } => {
+                assert_eq!(name, "dotfiles");
+                assert_eq!(
+                    entries,
+                    &vec![
+                        "https://host/a/dotfiles".to_string(),
+                        "https://host/b/dotfiles".to_string(),
+                    ]
+                );
+            }
+            other => panic!("expected DuplicateName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partition_collisions_names_normalized_urls_even_for_a_bare_entry() {
+        let entries = ["host/a/dotfiles", "http://host/b/dotfiles"];
+
+        let (_, failures) = partition_collisions(&entries);
+
+        assert_eq!(failures.len(), 1);
+        match &failures[0] {
+            RepoError::DuplicateName { entries, .. } => {
+                assert_eq!(
+                    entries,
+                    &vec![
+                        "https://host/a/dotfiles".to_string(),
+                        "https://host/b/dotfiles".to_string(),
+                    ],
+                    "message must show normalized URLs, not the raw list lines"
+                );
+            }
+            other => panic!("expected DuplicateName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partition_collisions_drops_exact_duplicate_normalized_urls_without_a_collision() {
+        let entries = ["https://host/a/dotfiles", "https://host/a/dotfiles"];
+
+        let (to_run, failures) = partition_collisions(&entries);
+
+        assert_eq!(to_run, vec!["https://host/a/dotfiles".to_string()]);
+        assert!(
+            failures.is_empty(),
+            "an exact duplicate must not be reported as a collision, got {failures:?}"
+        );
+    }
+
+    #[test]
+    fn partition_collisions_still_flags_different_urls_sharing_a_name() {
+        let entries = ["https://host/u/r", "https://host/u/r.git"];
+
+        let (to_run, failures) = partition_collisions(&entries);
+
+        assert!(to_run.is_empty());
+        assert_eq!(
+            failures.len(),
+            1,
+            "two different URLs sharing a name must still collide, got {failures:?}"
+        );
+    }
 }

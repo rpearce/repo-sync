@@ -217,8 +217,10 @@ github.com/user/repo3
 - The local directory an entry is cloned into is named after the last
   path segment of the entry, with any trailing `.git` removed. An entry
   that has no such segment (e.g. a bare host with no path) is an error,
-  and two entries that resolve to the same directory name are also an
-  error.
+  and two *different* entries that resolve to the same directory name
+  are also an error. Two entries that normalize to the exact same URL
+  (e.g. the same line listed twice) aren't treated as an error: the
+  repeat is ignored with a warning, and the entry is only cloned once.
 
 ## Releases
 

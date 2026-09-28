@@ -149,6 +149,102 @@ fn duplicate_repo_names_are_reported_not_raced() {
     );
 }
 
+/// A directory-name collision's message must show normalized URLs for
+/// every colliding entry — matching the convention `Clone`/`Sync`/
+/// `NoDirectoryName` already follow — even when the raw repo-list lines
+/// themselves differ (a bare `host/owner/repo` line and an `http://`
+/// line that upgrades to the same `https://` URL another entry already
+/// uses in normalized form).
+#[test]
+fn duplicate_repo_names_show_normalized_urls_in_the_message() {
+    let env = TestEnv::new();
+    let repos = env.repos_file(
+        "repos.txt",
+        &[
+            "example.invalid/a/dotfiles",
+            "http://example.invalid/b/dotfiles",
+        ],
+    );
+    let out = env.root().join("out");
+
+    let assert = env.run("clone", &repos, &out).failure().code(1);
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains(
+            "'dotfiles' is used by multiple entries: \
+             https://example.invalid/a/dotfiles, https://example.invalid/b/dotfiles"
+        ),
+        "stderr must show normalized URLs for both colliding entries, got: {stderr:?}"
+    );
+}
+
+/// An exact duplicate entry (the same normalized URL listed twice) is
+/// not a directory-name collision between two different repositories —
+/// it's the same repository listed twice. The repeat is dropped with a
+/// warning (which never changes the exit code), and the first
+/// occurrence still clones normally.
+#[test]
+fn exact_duplicate_entry_is_ignored_with_a_warning() {
+    let env = TestEnv::new();
+    let remote = env.bare_remote("dotfiles");
+    let url = env.file_url(&remote);
+    let repos = env.repos_file("repos.txt", &[&url, &url]);
+    let out = env.root().join("out");
+
+    let assert = env.run_with("clone", &repos, &out, &["-v"]).success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert_eq!(
+        stderr.matches("warning: duplicate entry").count(),
+        1,
+        "the duplicate warning must be printed exactly once, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains(&format!("warning: duplicate entry '{url}' ignored")),
+        "stderr must name the ignored duplicate, got: {stderr:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Cloned 1 repositories: 1 ok, 0 failed"),
+        "the summary must count only the unique entry, got: {stdout:?}"
+    );
+
+    assert!(
+        out.join("dotfiles").exists(),
+        "the deduplicated entry must still clone"
+    );
+}
+
+/// Two entries that normalize to *different* URLs but still derive the
+/// same directory name (one with a trailing `.git`, one without) remain
+/// a genuine collision: exact-duplicate detection must not accidentally
+/// swallow this case too.
+#[test]
+fn different_urls_sharing_a_name_still_collide() {
+    let env = TestEnv::new();
+    let remote = env.bare_remote("r");
+    let url = env.file_url(&remote);
+    let url_git_suffix = format!("{url}.git");
+    let repos = env.repos_file("repos.txt", &[&url, &url_git_suffix]);
+    let out = env.root().join("out");
+
+    let assert = env.run("clone", &repos, &out).failure().code(1);
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains(&format!(
+            "'r' is used by multiple entries: {url}, {url_git_suffix}"
+        )),
+        "stderr must report the collision between the two different URLs, got: {stderr:?}"
+    );
+    assert!(
+        !out.join("r").exists(),
+        "colliding entries must not create out/r"
+    );
+}
+
 /// A fully successful run without `-v` must produce no stdout output at
 /// all, so `repo-sync` stays cron-friendly by default.
 #[test]
