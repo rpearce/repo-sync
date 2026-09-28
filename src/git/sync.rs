@@ -57,8 +57,9 @@ fn git_command_failed(command: &str, path: &str, stderr: &[u8]) -> io::Error {
 fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
     // Step 1: Determine the current branch name
     // `git rev-parse --abbrev-ref HEAD` returns the branch currently checked out
-    // Note: `--quiet` is not a valid flag for `rev-parse` here; omit it and
-    // check the exit status directly instead.
+    // Note: `--quiet` is accepted here but has no effect without
+    // `--verify`, so it's just noise; omit it and check the exit status
+    // directly instead.
     let current_branch_output = process::Command::new("git")
         .arg("-C")
         .arg(path)

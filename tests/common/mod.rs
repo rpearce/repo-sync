@@ -9,9 +9,33 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use assert_cmd::Command as RepoSyncCommand;
+use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
+
+/// Git environment variables that carry repository state and might be
+/// inherited from the process running the tests — for example, git
+/// exports an absolute `GIT_DIR` and `GIT_INDEX_FILE` to hooks, and in a
+/// linked worktree `GIT_DIR` overrides `-C` entirely. Left set, they can
+/// make an isolated command silently operate on (and mutate) a real
+/// repository instead of the sandbox. Removed (not just overridden) from
+/// every command `isolate` touches. `pub` so `tests/harness.rs` can
+/// assert against this exact list instead of keeping its own copy.
+pub const INHERITED_GIT_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "XDG_CONFIG_HOME",
+];
 
 /// An isolated sandbox for one test: its own `HOME`, an empty global git
 /// config, and a fixed author/committer identity. Every git invocation
@@ -125,29 +149,52 @@ impl TestEnv {
         self.git(work.path(), &["rev-parse", "HEAD"])
     }
 
-    /// Write a repo-list file with one entry per line and return its path.
-    /// - `entries`: repo-list lines, e.g. `file://` URLs from `bare_remote`
-    pub fn repos_file(&self, entries: &[&str]) -> PathBuf {
-        let path = self.root().join("repos.txt");
+    /// Build a `file://` URL for `path`, usable as a repo-list entry or
+    /// as a `git` remote.
+    /// - `path`: an absolute local path, e.g. one returned by `bare_remote`
+    pub fn file_url(&self, path: &Path) -> String {
+        format!("file://{}", path.display())
+    }
+
+    /// Write a repo-list file named `name` (e.g. `"repos.txt"`) with one
+    /// entry per line, and return its path. Takes a name, rather than
+    /// always writing to the same file, so a single test can build more
+    /// than one repo-list without one overwriting another.
+    /// - `name`: file name to create under the sandbox root
+    /// - `entries`: repo-list lines, e.g. `file://` URLs from `file_url`
+    pub fn repos_file(&self, name: &str, entries: &[&str]) -> PathBuf {
+        let path = self.root().join(name);
         fs::write(&path, entries.join("\n") + "\n").expect("write repos file");
         path
     }
 
     /// The `repo-sync` binary under test, with the isolated environment
-    /// applied so its git children never touch real git config or state.
-    /// Callers add the subcommand and its arguments, e.g.
+    /// applied so its git children never touch real git config or state,
+    /// and a default 60-second timeout so a hang fails the test instead
+    /// of stalling CI. Callers add the subcommand and its arguments, e.g.
     /// `env.repo_sync().arg("sync").arg("-f").arg(&repos).arg("-o").arg(&out)`.
     pub fn repo_sync(&self) -> RepoSyncCommand {
-        let mut cmd = RepoSyncCommand::cargo_bin("repo-sync").expect("find repo-sync binary");
-        for (key, value) in self.env_pairs() {
-            cmd.env(key, value);
-        }
+        // Build as a plain `std::process::Command` first so it goes
+        // through the same `isolate` as every `git` call, then hand it
+        // to `assert_cmd` (which has no way to mutate an existing
+        // `assert_cmd::Command`'s inner `std::process::Command`).
+        let mut std_cmd = Command::cargo_bin("repo-sync").expect("find repo-sync binary");
+        self.isolate(&mut std_cmd);
+
+        let mut cmd = RepoSyncCommand::from_std(std_cmd);
+        cmd.timeout(Duration::from_secs(60));
         cmd
     }
 
-    /// Apply the isolated environment variables to a plain
-    /// `std::process::Command` (used by `git`).
+    /// Apply the isolated environment to a `std::process::Command`: unset
+    /// any inherited git repository state (`INHERITED_GIT_ENV_VARS`),
+    /// then set the sandbox's own `HOME`, git config and identity. Used
+    /// by both `git`/`try_git` and, via `Command::cargo_bin`, by
+    /// `repo_sync`, so there is exactly one place that does this.
     fn isolate(&self, cmd: &mut Command) {
+        for key in INHERITED_GIT_ENV_VARS {
+            cmd.env_remove(key);
+        }
         for (key, value) in self.env_pairs() {
             cmd.env(key, value);
         }

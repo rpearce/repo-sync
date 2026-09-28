@@ -18,8 +18,8 @@ fn sync_fast_forwards_non_current_tracking_branch_without_verbose() {
     env.push_commit(&remote, "feature", "feature commit 1");
 
     let out_dir = env.root().join("out");
-    let remote_url = format!("file://{}", remote.display());
-    let repos = env.repos_file(&[&remote_url]);
+    let remote_url = env.file_url(&remote);
+    let repos = env.repos_file("repos.txt", &[&remote_url]);
 
     // 2. Clone it with repo-sync.
     env.repo_sync()
