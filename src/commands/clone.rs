@@ -3,7 +3,7 @@ use std::{path::Path, process::ExitCode};
 use clap;
 use rayon::prelude::*;
 
-use crate::commands::{read_repo_list, report};
+use crate::commands::{partition_collisions, read_repo_list, report};
 use crate::config::Config;
 use crate::error::RepoError;
 use crate::git::clone::git_clone;
@@ -67,6 +67,7 @@ pub fn run(config: &Config) -> ExitCode {
         Err(code) => return code,
     };
     let repos = parse_repo_list(&content);
+    let (to_run, failures) = partition_collisions(&repos);
 
     if config.verbose {
         println!(
@@ -76,10 +77,11 @@ pub fn run(config: &Config) -> ExitCode {
         );
     }
 
-    let results: Vec<Result<(), RepoError>> = repos
+    let mut results: Vec<Result<(), RepoError>> = to_run
         .par_iter()
         .map(|url| clone_repo(url, config))
         .collect();
+    results.extend(failures.into_iter().map(Err));
 
     report("Cloned", &results, config.verbose)
 }

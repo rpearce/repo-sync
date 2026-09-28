@@ -22,6 +22,16 @@ pub enum RepoError {
     /// silently operate on whatever *enclosing* repository it walks up
     /// to find instead.
     NotAGitRepository { path: PathBuf },
+    /// Two or more repo-list entries derive the same directory name (e.g.
+    /// `.../a/dotfiles` and `.../b/dotfiles` both resolve to
+    /// `<out>/dotfiles`). Detected up front, before the parallel
+    /// clone/sync phase, instead of letting the entries race to write the
+    /// same path; none of `entries` are run. `entries` are the colliding
+    /// repo-list entries, as normalized URLs. One `DuplicateName` is
+    /// produced per colliding entry (see
+    /// `crate::commands::partition_collisions`), so all of them share
+    /// this exact message.
+    DuplicateName { name: String, entries: Vec<String> },
 }
 
 impl fmt::Display for RepoError {
@@ -37,6 +47,13 @@ impl fmt::Display for RepoError {
             RepoError::NotAGitRepository { path } => {
                 write!(f, "{} exists but is not a git repository", path.display())
             }
+            RepoError::DuplicateName { name, entries } => {
+                write!(
+                    f,
+                    "'{name}' is used by multiple entries: {}",
+                    entries.join(", ")
+                )
+            }
         }
     }
 }
@@ -45,7 +62,9 @@ impl std::error::Error for RepoError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             RepoError::Clone { source, .. } | RepoError::Sync { source, .. } => Some(source),
-            RepoError::NoDirectoryName { .. } | RepoError::NotAGitRepository { .. } => None,
+            RepoError::NoDirectoryName { .. }
+            | RepoError::NotAGitRepository { .. }
+            | RepoError::DuplicateName { .. } => None,
         }
     }
 }
