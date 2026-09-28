@@ -9,7 +9,7 @@ use crate::git::sync::sync_repo;
 /// Returns the `clap::Command` spec for the `sync` subcommand.
 pub fn command() -> clap::Command {
     clap::Command::new("sync")
-        .about("Sync existing repositories (pull + branch updates)")
+        .about("Sync existing repositories (fetch + branch fast-forward)")
         .arg(
             clap::Arg::new("file")
                 .short('f')

@@ -2,10 +2,13 @@ use std::{io, path::Path, process};
 
 use crate::config::Config;
 use crate::git::clone::git_clone;
-use crate::git::pull::git_pull;
 use crate::utils::url::normalize;
 
-/// Sync a repository at `url` into `base_dir`: clone if missing, otherwise pull updates.
+/// Sync a repository at `url` into `base_dir`: clone if missing, otherwise
+/// fetch and fast-forward it. Never runs a plain `git pull`: that would
+/// honor the user's `pull.rebase` config (rewriting local commits) and
+/// merge into a dirty working tree, both of which contradict a tool that
+/// promises a fast-forward-only update. See `sync_repo_branches`.
 /// - `url`: repository URL (partial URLs are prefixed with https://)
 /// - `base_dir`: local directory for repositories
 /// - `config`: command configuration
@@ -23,9 +26,6 @@ pub fn sync_repo(url: &str, config: &Config) {
 
     // Step 4: Check if the repository already exists locally
     if path.exists() {
-        if let Err(e) = git_pull(&path, config) {
-            eprintln!("Error pulling {}: {}", url, e)
-        }
         if let Err(e) = sync_repo_branches(path.to_str().unwrap(), config) {
             eprintln!("Error syncing branches in {}: {}", url, e);
         }
@@ -50,7 +50,9 @@ fn git_command_failed(command: &str, path: &str, stderr: &[u8]) -> io::Error {
 }
 
 /// Synchronize all local branches in the repository at `path` with their upstreams.
-/// Current branch: fast-forward merge if working tree is clean.
+/// Current branch: fast-forward merge (`merge --ff-only`) if there are no
+/// tracked-file modifications; untracked files never block it, since
+/// `merge --ff-only` itself refuses to overwrite one that's in the way.
 /// Other branches: update directly from upstream without checkout.
 /// - `path`: local repository directory
 /// - `config`: command configuration
@@ -138,9 +140,15 @@ fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
         let upstream = parts.next().unwrap().trim();
 
         if local == current_branch {
-            // Current branch: merge from upstream if working tree is clean
+            // Current branch: merge from upstream if there are no tracked
+            // modifications.
 
-            // Check if working tree is clean using `git status --porcelain`
+            // Check for tracked modifications using
+            // `git status --porcelain --untracked-files=no`. Untracked
+            // files are deliberately excluded: counting them as "dirty"
+            // would block fast-forwards that work fine today, and
+            // `merge --ff-only` itself refuses to overwrite an untracked
+            // file that's actually in the way.
             // Note: `--quiet` is not a valid flag for `status` here; omit
             // it and check the exit status directly. Fail closed: if the
             // status check itself fails, we must not treat that as
@@ -150,11 +158,12 @@ fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
                 .arg(path)
                 .arg("status")
                 .arg("--porcelain")
+                .arg("--untracked-files=no")
                 .output()?;
 
             if !status_out.status.success() {
                 return Err(git_command_failed(
-                    "git status --porcelain",
+                    "git status --porcelain --untracked-files=no",
                     path,
                     &status_out.stderr,
                 ));
