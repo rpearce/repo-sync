@@ -237,6 +237,112 @@ fn sync_reports_duplicate_repo_names_instead_of_racing() {
     );
 }
 
+/// A non-current branch that has diverged from its upstream (both sides
+/// have commits the other lacks) can't be fast-forwarded by `fetch .`.
+/// That must be reported as a single attributed `warning:` line naming
+/// the branch, not silently ignored (the old behavior) and not one of
+/// git's own raw, unattributed `hint:`/`fatal:` lines. The branch itself
+/// must be left exactly as it was: a failed fast-forward is a warning,
+/// never a reason to force anything.
+#[test]
+fn sync_warns_on_diverged_non_current_branch() {
+    let env = TestEnv::new();
+
+    // Remote `main` (from `bare_remote`) plus a `feature` branch one
+    // commit ahead of it.
+    let remote = env.bare_remote("dotfiles");
+    env.push_commit(&remote, "feature", "feature commit 1");
+
+    let fx = env.clone_remote(&remote);
+
+    // Local `feature`, tracking `origin/feature`, gets its own commit
+    // that the remote never sees.
+    env.git(&fx.clone, &["branch", "feature", "origin/feature"]);
+    env.git(&fx.clone, &["checkout", "feature"]);
+    fs::write(fx.clone.join("local-feature.txt"), "local feature change\n")
+        .expect("write local feature file");
+    env.git(&fx.clone, &["add", "."]);
+    env.git(&fx.clone, &["commit", "-m", "local feature commit"]);
+    let local_feature_sha = env.git(&fx.clone, &["rev-parse", "feature"]);
+    env.git(&fx.clone, &["checkout", "main"]);
+
+    // The remote's `feature` advances from the same base with a
+    // *different* commit, so the two histories genuinely diverge rather
+    // than one simply being behind the other.
+    env.push_commit(&remote, "feature", "feature commit 2");
+
+    let assert = env.run("sync", &fx.repos, &fx.out).success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("warning: dotfiles: could not fast-forward feature"),
+        "stderr must contain a single attributed warning naming the repo \
+         and the diverged branch, got: {stderr:?}"
+    );
+    assert!(
+        !stderr.lines().any(|l| l.trim_start().starts_with("hint:")),
+        "stderr must not contain git's own raw, unattributed hint: lines, \
+         got: {stderr:?}"
+    );
+
+    // The local branch must be left exactly as it was: no rebase, no
+    // forced update, nothing.
+    let local_feature_sha_after = env.git(&fx.clone, &["rev-parse", "feature"]);
+    assert_eq!(
+        local_feature_sha_after, local_feature_sha,
+        "a diverged non-current branch must be left untouched"
+    );
+}
+
+/// The *current* branch can diverge from its upstream too (a local
+/// commit plus an advanced remote). `merge --ff-only` then refuses, and
+/// that must also surface as one attributed `warning:` line rather than
+/// git's own multi-line, unattributed `hint:` advice text plus an
+/// unattributed `fatal:` line.
+#[test]
+fn sync_warns_on_diverged_current_branch() {
+    let env = TestEnv::new();
+    let fx = env.cloned("dotfiles");
+
+    // Commit locally on `main`, touching a file the remote's commit below
+    // never touches, so the two histories diverge without conflicting.
+    fs::write(fx.clone.join("local.txt"), "local change\n").expect("write local file");
+    env.git(&fx.clone, &["add", "."]);
+    env.git(&fx.clone, &["commit", "-m", "local commit"]);
+    let local_head_before = env.git(&fx.clone, &["rev-parse", "HEAD"]);
+
+    // Advance the remote's `main` with an unrelated commit.
+    env.push_commit(&fx.remote, "main", "remote commit");
+
+    let assert = env.run("sync", &fx.repos, &fx.out).success();
+
+    // The local commit must survive untouched: a diverged current branch
+    // is a warning, never a reason to merge, rebase or otherwise move HEAD.
+    let local_head_after = env.git(&fx.clone, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        local_head_after, local_head_before,
+        "a diverged current branch must be left untouched"
+    );
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("warning: dotfiles: could not fast-forward main"),
+        "stderr must contain a single attributed warning naming the repo \
+         and the diverged branch, got: {stderr:?}"
+    );
+    assert!(
+        !stderr.lines().any(|l| l.trim_start().starts_with("hint:")),
+        "stderr must not contain git's own raw, unattributed hint: lines, \
+         got: {stderr:?}"
+    );
+    assert!(
+        !stderr.lines().any(|l| l.trim_start().starts_with("fatal:")),
+        "stderr must not contain a bare, unattributed fatal: line (git's \
+         own fatal: text may still appear inside the attributed warning \
+         line itself), got: {stderr:?}"
+    );
+}
+
 /// `sync` must never delete a local tag that was never pushed to the
 /// remote. Regression test for the bug where `git fetch --all -Pp`
 /// includes `--prune-tags`, which deletes any local tag the remote

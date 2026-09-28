@@ -44,14 +44,44 @@ pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
     }
 }
 
+/// Print a single attributed `warning:` line for a non-fatal branch-level
+/// update failure (a non-fast-forward `merge`, or a `fetch .` rejecting a
+/// diverged non-current branch), instead of leaving it silently ignored
+/// or letting git's own multi-line, unattributed stderr reach the user
+/// directly. Per the error taxonomy, a branch-level update failure is a
+/// warning: it never changes the process exit code.
+/// - `repo`: identifies which repository this warning is about (the
+///   repo's directory name, since that's what's on hand in
+///   `sync_repo_branches`; the normalized URL isn't plumbed down this far)
+/// - `branch`: the local branch that couldn't be updated
+/// - `err`: the failed git command's error, whose message is git's
+///   captured stderr (see `command::git_output`)
+fn warn_branch_update_failed(repo: &str, branch: &str, err: &io::Error) {
+    let message = err.to_string();
+    let first_line = message.lines().next().unwrap_or("");
+    eprintln!("warning: {repo}: could not fast-forward {branch}: {first_line}");
+}
+
 /// Synchronize all local branches in the repository at `path` with their upstreams.
 /// Current branch: fast-forward merge (`merge --ff-only`) if there are no
 /// tracked-file modifications; untracked files never block it, since
 /// `merge --ff-only` itself refuses to overwrite one that's in the way.
-/// Other branches: update directly from upstream without checkout.
+/// Other branches: update directly from upstream without checkout. A
+/// diverged/non-fast-forwardable branch (current or not) is reported as
+/// one attributed warning (see `warn_branch_update_failed`) rather than
+/// silently ignored or left as git's own unattributed stderr noise.
 /// - `path`: local repository directory
 /// - `config`: command configuration
 fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
+    // Identifies this repo in a branch-level warning: the normalized URL
+    // isn't available this far down, but the repo's directory name is,
+    // and it's the same name `repo_name` derived the URL down to in
+    // `sync_repo`.
+    let repo = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("<unknown>");
+
     // Step 1: Determine the current branch name
     // `git rev-parse --abbrev-ref HEAD` returns the branch currently checked out
     let current_branch = command::git_output(path, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -115,20 +145,40 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
             let clean = status_out.is_empty();
 
             if clean {
-                // Safe fast-forward merge from upstream branch.
-                // Non-fatal: merge failures are reported by inherited
-                // stderr, not turned into a returned error (unchanged
-                // from before; out of scope for this fix).
-                let _ = command::git_run(path, &["merge", "--ff-only", upstream], config.verbose);
+                // Safe fast-forward merge from upstream branch. Captured
+                // (not inherited) so a failure can be attributed to this
+                // repo and branch in one line instead of raw,
+                // unattributed git noise. `-c advice.diverging=false`
+                // suppresses ~10 lines of generic hint text about a
+                // diverged branch that this warning already explains.
+                // Non-fatal: a failed fast-forward is a warning, not a
+                // failure (see the error taxonomy).
+                if let Err(e) = command::git_output(
+                    path,
+                    &[
+                        "-c",
+                        "advice.diverging=false",
+                        "merge",
+                        "--ff-only",
+                        upstream,
+                    ],
+                ) {
+                    warn_branch_update_failed(repo, local, &e);
+                }
             } else if config.verbose {
                 // Working tree dirty: skip merge to avoid conflicts
                 println!("Skipping merge on {} (dirty branch)", local);
             }
         } else {
-            // Non-current branch: update directly from upstream without checkout
-            // Equivalent to: `git fetch . <upstream>:<local>`
+            // Non-current branch: update directly from upstream without
+            // checkout. Equivalent to: `git fetch . <upstream>:<local>`.
+            // Captured (not inherited), for the same reason as the merge
+            // above: a non-fast-forward here (e.g. a diverged branch, or
+            // a `[gone]` upstream) is a warning, not a failure.
             let refspec = format!("{}:{}", upstream, local);
-            let _ = command::git_run(path, &["fetch", ".", &refspec], config.verbose);
+            if let Err(e) = command::git_output(path, &["fetch", ".", &refspec]) {
+                warn_branch_update_failed(repo, local, &e);
+            }
         }
     }
 
