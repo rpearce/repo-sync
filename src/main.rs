@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -21,8 +22,11 @@ use config::Config;
 /// - `--file` / `-f`: path to a text file containing one repo URL per line
 /// - `--out` / `-o`: local directory where repositories are cloned/synced
 ///
-/// `--verbose` / `-v` is a global flag, so it may appear before or after
-/// the subcommand (e.g. `repo-sync -v sync ...` or `repo-sync sync ... -v`).
+/// `--verbose` / `-v` and `--jobs` / `-j` are global flags, so either may
+/// appear before or after the subcommand (e.g. `repo-sync -v sync ...` or
+/// `repo-sync sync ... -v`). `--jobs` bounds how many repositories are
+/// processed in parallel; when it's omitted, rayon picks its own default
+/// (the number of CPUs, or `RAYON_NUM_THREADS` if set).
 ///
 /// Example:
 ///   repo-sync clone -f repos.txt -o ./repos
@@ -42,11 +46,15 @@ fn main() -> ExitCode {
 
     match cli.command {
         Commands::Clone(args) => {
-            let config = Config::new(args.file, args.out).with_verbose(cli.verbose);
+            let config = Config::new(args.file, args.out)
+                .with_verbose(cli.verbose)
+                .with_jobs(cli.jobs);
             commands::clone::run(&config)
         }
         Commands::Sync(args) => {
-            let config = Config::new(args.file, args.out).with_verbose(cli.verbose);
+            let config = Config::new(args.file, args.out)
+                .with_verbose(cli.verbose)
+                .with_jobs(cli.jobs);
             commands::sync::run(&config)
         }
     }
@@ -59,6 +67,10 @@ struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Number of repositories to process in parallel [default: number of CPUs]
+    #[arg(short = 'j', long = "jobs", global = true)]
+    jobs: Option<NonZeroUsize>,
 
     #[command(subcommand)]
     command: Commands,
@@ -85,7 +97,9 @@ struct RepoArgs {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use std::num::NonZeroUsize;
+
+    use clap::{CommandFactory, Parser};
 
     use super::Cli;
 
@@ -95,5 +109,52 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    /// `-j 0` must be rejected at parse time (before any repository is
+    /// touched), not accepted and then misbehave or panic later when
+    /// handed to `rayon::ThreadPoolBuilder::num_threads`.
+    #[test]
+    fn jobs_zero_is_rejected_at_parse_time() {
+        let result = Cli::try_parse_from([
+            "repo-sync",
+            "-j",
+            "0",
+            "sync",
+            "-f",
+            "repos.txt",
+            "-o",
+            "out",
+        ]);
+
+        assert!(result.is_err(), "-j 0 must be rejected at parse time");
+    }
+
+    /// `-j 8` must be accepted and parsed into `Some(8)`.
+    #[test]
+    fn jobs_accepts_a_positive_value() {
+        let cli = Cli::try_parse_from([
+            "repo-sync",
+            "-j",
+            "8",
+            "sync",
+            "-f",
+            "repos.txt",
+            "-o",
+            "out",
+        ])
+        .expect("-j 8 must be accepted");
+
+        assert_eq!(cli.jobs, Some(NonZeroUsize::new(8).unwrap()));
+    }
+
+    /// Omitting `-j` entirely must parse fine and leave `jobs` unset, so
+    /// the run falls back to rayon's own default.
+    #[test]
+    fn jobs_defaults_to_none() {
+        let cli = Cli::try_parse_from(["repo-sync", "sync", "-f", "repos.txt", "-o", "out"])
+            .expect("sync without -j must be accepted");
+
+        assert_eq!(cli.jobs, None);
     }
 }
