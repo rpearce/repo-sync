@@ -7,6 +7,7 @@ use crate::commands::{read_repo_list, report};
 use crate::config::Config;
 use crate::error::RepoError;
 use crate::git::sync::sync_repo;
+use crate::utils::repo_list::parse_repo_list;
 
 /// Returns the `clap::Command` spec for the `sync` subcommand.
 pub fn command() -> clap::Command {
@@ -45,7 +46,7 @@ pub fn run(config: &Config) -> ExitCode {
         Ok(content) => content,
         Err(code) => return code,
     };
-    let repos: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let repos = parse_repo_list(&content);
 
     if config.verbose {
         println!(
