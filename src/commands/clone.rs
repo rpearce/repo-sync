@@ -1,9 +1,10 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::ExitCode};
 
 use clap;
 use rayon::prelude::*;
 
 use crate::config::Config;
+use crate::error::RepoError;
 use crate::git::clone::git_clone;
 use crate::utils::url::normalize;
 
@@ -38,7 +39,7 @@ pub fn command() -> clap::Command {
 /// - `url`: repository URL
 /// - `base_dir`: directory where the repo should be cloned
 /// - `config`: command configuration
-pub fn clone_repo(url: &str, config: &Config) {
+pub fn clone_repo(url: &str, config: &Config) -> Result<(), RepoError> {
     let url = normalize(url);
     let name = url.split('/').next_back().unwrap().replace(".git", "");
     let path = Path::new(&config.output_dir).join(&name);
@@ -47,15 +48,28 @@ pub fn clone_repo(url: &str, config: &Config) {
         if config.verbose {
             println!("Skipping {}, already exists", name);
         }
-    } else if let Err(e) = git_clone(&url, &path, config) {
-        eprintln!("Error cloning {}: {}", url, e);
+        Ok(())
+    } else {
+        git_clone(&url, &path, config).map_err(|source| RepoError::Clone { url, source })
     }
 }
 
 /// Runs the `clone` command.
 /// - `config`: command configuration
-pub fn run(config: &Config) {
-    let content = fs::read_to_string(&config.repos_file).expect("Failed to read repo list file");
+///
+/// Returns `ExitCode::FAILURE` (without cloning anything) if the repo
+/// list can't be read, or if any repository fails to clone.
+pub fn run(config: &Config) -> ExitCode {
+    let content = match fs::read_to_string(&config.repos_file) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!(
+                "error: cannot read repo list '{}': {e}",
+                config.repos_file.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let repos: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
     if config.verbose {
@@ -66,5 +80,30 @@ pub fn run(config: &Config) {
         );
     }
 
-    repos.par_iter().for_each(|url| clone_repo(url, config));
+    let results: Vec<Result<(), RepoError>> = repos
+        .par_iter()
+        .map(|url| clone_repo(url, config))
+        .collect();
+
+    for result in &results {
+        if let Err(e) = result {
+            eprintln!("{e}");
+        }
+    }
+
+    let total = results.len();
+    let failed = results.iter().filter(|r| r.is_err()).count();
+    let ok = total - failed;
+    let summary = format!("Cloned {total} repositories: {ok} ok, {failed} failed");
+
+    if failed > 0 {
+        eprintln!("{summary}");
+        return ExitCode::FAILURE;
+    }
+
+    if config.verbose {
+        println!("{summary}");
+    }
+
+    ExitCode::SUCCESS
 }

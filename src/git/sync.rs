@@ -1,6 +1,7 @@
 use std::{io, path::Path, process};
 
 use crate::config::Config;
+use crate::error::RepoError;
 use crate::git::clone::git_clone;
 use crate::utils::url::normalize;
 
@@ -12,7 +13,7 @@ use crate::utils::url::normalize;
 /// - `url`: repository URL (partial URLs are prefixed with https://)
 /// - `base_dir`: local directory for repositories
 /// - `config`: command configuration
-pub fn sync_repo(url: &str, config: &Config) {
+pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
     // Step 1: Normalize the URL to ensure it has a protocol (https://)
     let url = normalize(url);
 
@@ -26,11 +27,10 @@ pub fn sync_repo(url: &str, config: &Config) {
 
     // Step 4: Check if the repository already exists locally
     if path.exists() {
-        if let Err(e) = sync_repo_branches(path.to_str().unwrap(), config) {
-            eprintln!("Error syncing branches in {}: {}", url, e);
-        }
-    } else if let Err(e) = git_clone(&url, &path, config) {
-        eprintln!("Error cloning {}: {}", url, e)
+        sync_repo_branches(path.to_str().unwrap(), config)
+            .map_err(|source| RepoError::Sync { url, source })
+    } else {
+        git_clone(&url, &path, config).map_err(|source| RepoError::Clone { url, source })
     }
 }
 
