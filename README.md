@@ -122,42 +122,73 @@ main
 
 ### From GitHub Releases (Recommended)
 
-Download, verify, and install the latest binary for your platform with the
-snippet below. It runs in a subshell so it can't alter or kill your
-interactive shell, downloads only over HTTPS, and checks the SHA-256
-checksum before extracting anything:
+Pick the asset for your platform:
+
+| Platform                    | Asset                                |
+|------------------------------|---------------------------------------|
+| Linux x86_64                 | `repo-sync-linux-x86_64.tar.gz`       |
+| Linux x86_64 (musl/static)   | `repo-sync-linux-musl-x86_64.tar.gz`  |
+| macOS (Intel)                | `repo-sync-macos-x86_64.tar.gz`       |
+| macOS (Apple Silicon)        | `repo-sync-macos-aarch64.tar.gz`      |
+
+Set `ASSET` below to that filename, then paste the whole block into your
+shell (works in both bash and zsh). It runs in a subshell so it can't alter
+or kill your interactive shell, downloads only over HTTPS, and verifies the
+release's SHA-256 checksum — including that the checksum file actually
+names the tarball just downloaded, not some other file — before extracting
+anything:
 
 ```bash
 (
   set -euo pipefail
-  # Pick the asset for your platform:
-  #   repo-sync-linux-x86_64.tar.gz        Linux x86_64
-  #   repo-sync-linux-musl-x86_64.tar.gz   Linux x86_64 (musl/static)
-  #   repo-sync-macos-x86_64.tar.gz        macOS (Intel)
-  #   repo-sync-macos-aarch64.tar.gz       macOS (Apple Silicon)
   ASSET=repo-sync-macos-aarch64.tar.gz
   BASE="https://github.com/rpearce/repo-sync/releases/latest/download"
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; cd "$tmp"
   curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET"
   curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET.sha256"
-  if command -v sha256sum >/dev/null; then
+  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256"
+  if command -v sha256sum >/dev/null 2>&1; then
     sha256sum -c "$ASSET.sha256"
   else
     shasum -a 256 -c "$ASSET.sha256"
   fi
-  # Stronger (requires the gh CLI): verifies the tarball was built by
-  # this repo's GitHub Actions workflow, not just that the bytes match
-  # the checksum above.
-  # gh attestation verify "$ASSET" --repo rpearce/repo-sync
   tar -xzf "$ASSET"
   mkdir -p ~/.local/bin
   install -m 0755 repo-sync ~/.local/bin/repo-sync
 )
 ```
 
-**Note:** `.sha256` checksums and build provenance attestations are only
-published for releases created after this change; older releases don't
-have them.
+**Recommended, if you have the [GitHub CLI](https://cli.github.com/)
+installed and logged in (`gh auth login`):** use this variant instead of
+the one above. It additionally verifies the release's build provenance
+attestation before extracting, which is a stronger guarantee than the
+checksum: the checksum only proves the download matches what this release
+published, while the attestation proves this repository's GitHub Actions
+workflow actually built it.
+
+```bash
+(
+  set -euo pipefail
+  ASSET=repo-sync-macos-aarch64.tar.gz
+  BASE="https://github.com/rpearce/repo-sync/releases/latest/download"
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; cd "$tmp"
+  curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET"
+  curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET.sha256"
+  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c "$ASSET.sha256"
+  else
+    shasum -a 256 -c "$ASSET.sha256"
+  fi
+  gh attestation verify "$ASSET" --repo rpearce/repo-sync --signer-workflow rpearce/repo-sync/.github/workflows/release.yml
+  tar -xzf "$ASSET"
+  mkdir -p ~/.local/bin
+  install -m 0755 repo-sync ~/.local/bin/repo-sync
+)
+```
+
+**Note:** `.sha256` checksums and build provenance attestations are
+published for releases after 0.1.2; 0.1.2 and earlier don't have them.
 
 **Note:** Make sure `~/.local/bin` is in your PATH. Add this to your shell config (`~/.bashrc`, `~/.zshrc`, etc.):
 ```bash
@@ -224,7 +255,7 @@ To create a new release:
 
 1. On a non-`main` branch, run `./release <version>` (e.g., `./release 1.0.0`). This bumps the version in `Cargo.toml`/`Cargo.lock`, runs the test suite, and commits the change; it does not tag or push anything.
 2. Open a pull request for that branch and merge it into `main`.
-3. Tag the merge commit on `main` and push the tag:
+3. Tag the merge commit on `main` and push the tag (or `git tag -a` if you don't sign tags):
    ```bash
    git switch main && git pull --ff-only && git tag -s <version> -m "Release <version>" && git push origin <version>
    ```
