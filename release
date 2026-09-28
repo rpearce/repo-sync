@@ -24,12 +24,25 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
+# Refuse to run on main: this script only prepares a release commit on
+# a feature branch, which then goes through a PR.
+current_branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$current_branch" = "main" ]; then
+  echo "Error: don't run this on main. Create a branch first, e.g.:" >&2
+  echo "  git switch -c release/$VERSION" >&2
+  exit 1
+fi
+
 echo "Preparing release $VERSION..."
 
 # Update only the [package] version line in Cargo.toml (the first
 # "version = " line), leaving any later "version = " line (e.g. in
-# [dependencies]) untouched.
-sed -i.bak '/^\[package\]/,/^\[/{s/^version = .*/version = "'"$VERSION"'"/}' Cargo.toml
+# [dependencies] or a [dependencies.foo] table) untouched. The
+# trailing ";" before the closing "}" is required: BSD/macOS sed
+# (unlike GNU sed) treats a bare "}" right after the substitute
+# command as part of it and errors with "bad flag in substitute
+# command: '}'".
+sed -i.bak '/^\[package\]/,/^\[/{s/^version = .*/version = "'"$VERSION"'"/;}' Cargo.toml
 rm -f Cargo.toml.bak
 
 # Run tests
@@ -50,5 +63,5 @@ Next steps:
   1. Open a PR for this branch and get it merged into main.
   2. After it merges, tag the merge commit and push the tag:
 
-       git switch main && git pull --ff-only && git tag -a $VERSION -m "Release $VERSION" && git push origin $VERSION
+       git switch main && git pull --ff-only && git tag -s $VERSION -m "Release $VERSION" && git push origin $VERSION
 EOF

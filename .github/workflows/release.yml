@@ -19,9 +19,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # GitHub-hosted runners aren't guaranteed to ship a Rust
+      # toolchain; install one explicitly (same action/version the
+      # build job below uses) so `cargo metadata` works.
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Check tag matches Cargo.toml version
         run: |
-          cargo_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "(.*)"/\1/')"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           if [ "$GITHUB_REF_NAME" != "$cargo_version" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
             exit 1
@@ -30,7 +35,12 @@ jobs:
 
       - name: Check tagged commit is on main
         run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          # Use the full remote-tracking ref, not the short form
+          # "origin/main": git resolves refs/tags/* before
+          # refs/remotes/*, so a maliciously named tag literally
+          # called "origin/main" would otherwise shadow the real
+          # remote-tracking ref and let an off-main tag pass.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
             echo "::error::commit $GITHUB_SHA is not an ancestor of origin/main"
             exit 1
           fi
@@ -80,7 +90,7 @@ jobs:
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/repo-sync dist/
-          cd dist && tar czf ../${{ matrix.name }} *
+          cd dist && tar czf "../${{ matrix.name }}" repo-sync
 
       - name: Checksum
         run: shasum -a 256 "${{ matrix.name }}" > "${{ matrix.name }}.sha256"
