@@ -113,7 +113,7 @@ main
 - Clone multiple repositories from a text file of URLs.
 - Fetch and fast-forward branches for existing repositories (never `git pull`).
 - Process repositories in parallel; the number of jobs is configurable with `-j`/`--jobs` (defaults to the number of CPUs).
-- Never prompts for credentials, so an unattended run fails fast instead of hanging.
+- Never prompts on the terminal for HTTPS credentials, so an unattended run fails fast instead of hanging (see [Credentials and prompts](#credentials-and-prompts)).
 - Prebuilt binaries for Linux (x86_64 glibc/musl) and macOS (x86_64/arm64); other platforms are untested but may build from source.
 
 ## Installation
@@ -173,10 +173,16 @@ repo-sync <clone|sync> -f repos.txt -o ./repos
 
 These apply to both subcommands and may appear before or after them:
 
-- `-v, --verbose`: Show git's own output for each repository (attributed
-  to that repository), plus informational lines (e.g. a skipped or
-  duplicate entry), and print the summary line on stdout when the run
-  succeeds. Without it, a fully successful run is silent.
+- `-v, --verbose`: Print the run's header line, a few informational
+  lines (e.g. an existing clone being skipped, a dirty current branch,
+  or a `[gone]` upstream — named by entry/branch, not by repository),
+  and the summary line on stdout when the run succeeds. Attribution is
+  partial: a branch-level fast-forward or fetch is printed as
+  `<repo>: <line>`, but `git clone` and `git fetch --all` inherit the
+  terminal directly (they're passed `--quiet` without `-v`), so their
+  own output appears unattributed to any repository. Without `-v`,
+  stdout gets nothing; warnings (e.g. a duplicate entry, a diverged
+  branch) still go to stderr regardless.
 - `-j, --jobs <N>`: Limit how many repositories are processed in
   parallel. Defaults to the number of CPUs; `RAYON_NUM_THREADS` also
   works. `0` is rejected.
@@ -196,10 +202,14 @@ For each entry:
 - Fails if the target directory already exists but isn't a git repository.
 - Otherwise, updates the existing clone:
   - Fetches all remotes with `--prune`, which removes deleted
-    remote-tracking branches but never deletes local tags.
+    remote-tracking branches. `repo-sync` doesn't request tag pruning
+    itself, but a `fetch.pruneTags` (or `remote.<name>.pruneTags`)
+    setting in your own git config still applies and can delete local
+    tags.
   - Fast-forwards the current branch only (`merge --ff-only`; never
-    merges or rebases), and skips it when tracked files are modified —
-    untracked files never block it.
+    merges or rebases), and skips it when tracked files are modified.
+    Untracked files don't count as modifications (git still refuses to
+    overwrite one that's in the way).
   - Fast-forwards every other local branch directly from its upstream,
     without checking it out.
   - Skips a branch whose upstream is gone (deleted on the remote); shown
@@ -224,11 +234,18 @@ repo-sync clone -f repos.txt -o ./repos
 ### Exit status
 
 - `0`: every repository succeeded.
-- `1`: at least one repository failed. The summary line is then printed
-  to stderr regardless of `-v`. A warning (e.g. a skipped, diverged
-  branch) never causes this.
-- `2`: a clap usage error (e.g. a missing required argument, or no
-  arguments at all).
+- `1`: any of the following:
+  - the repo-list file can't be read;
+  - `git` isn't on `PATH`;
+  - the thread pool for `-j`/`--jobs` fails to build;
+  - one or more repositories failed to clone/sync — this is the only
+    case where the summary line is printed, to stderr, regardless of
+    `-v`; the other three cases print just their own error line.
+
+  A warning (e.g. a diverged branch, a `[gone]` upstream, a duplicate
+  entry) never causes this.
+- `2`: a command-line usage error (e.g. a missing required argument, or
+  no arguments at all). `--help` and `--version` exit `0`.
 
 The summary line's format is:
 
@@ -238,12 +255,16 @@ The summary line's format is:
 
 ### Credentials and prompts
 
-`repo-sync` never prompts for credentials — every git invocation sets
-`GIT_TERMINAL_PROMPT=0` and closes stdin — so an HTTPS remote that needs
-a username/password fails immediately instead of hanging. This doesn't
-cover SSH's own prompts (host-key verification, a passphrase-protected
-key); set up `ssh-agent`, or configure `BatchMode` for those remotes, so
-they don't hang either.
+`repo-sync` never prompts on the terminal for HTTPS credentials — every
+git invocation sets `GIT_TERMINAL_PROMPT=0` and closes stdin — so an
+HTTPS remote that needs a username/password fails immediately instead
+of hanging. This only suppresses git's own built-in terminal prompt: a
+configured credential helper or askpass program (`GIT_ASKPASS`,
+`core.askPass`, `SSH_ASKPASS`, a GUI credential manager) still runs and
+can still prompt, and it doesn't cover SSH's own prompts (host-key
+verification, a passphrase-protected key), which read the controlling
+terminal directly rather than stdin. Set up `ssh-agent`, or configure
+`BatchMode`, for those remotes so they don't hang either.
 
 ### File format
 
@@ -278,7 +299,7 @@ github.com/user/repo3
   *different* entries that resolve to the same directory name are also
   an error. Two entries that normalize to the exact same URL (e.g. the
   same line listed twice) aren't treated as an error: the repeat is
-  ignored with a warning, and the entry is only cloned once.
+  ignored with a warning, and the entry is only processed once.
 
 ## Releases
 
