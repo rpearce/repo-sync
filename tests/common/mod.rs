@@ -142,6 +142,26 @@ impl TestEnv {
         bare_path
     }
 
+    /// Create an empty bare repository named `name` under the sandbox: no
+    /// seed commit, unlike `bare_remote`. Its `HEAD` still points at a
+    /// branch (`main`) via a symbolic ref, but that branch doesn't exist
+    /// as an actual ref yet ("unborn"), since nothing has ever been
+    /// committed. A clone of this remote inherits the same unborn `HEAD`,
+    /// which `git rev-parse --abbrev-ref HEAD` fails on (while
+    /// `git symbolic-ref -q HEAD` succeeds).
+    /// - `name`: directory name for the bare repo
+    pub fn empty_bare_remote(&self, name: &str) -> PathBuf {
+        let bare_path = self.root().join("remotes").join(name);
+        fs::create_dir_all(bare_path.parent().expect("remotes dir has a parent"))
+            .expect("create remotes directory");
+        self.git(
+            self.root(),
+            &["init", "--bare", "-b", "main", path_str(&bare_path)],
+        );
+
+        bare_path
+    }
+
     /// Advance `branch` on `remote` by one commit, via a fresh throwaway
     /// working clone (so it never disturbs a caller's own clone of
     /// `remote`). Creates `branch` (from `remote`'s default branch) if it
