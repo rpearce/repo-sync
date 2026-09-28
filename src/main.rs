@@ -69,7 +69,7 @@ struct Cli {
     verbose: bool,
 
     /// Number of repositories to process in parallel [default: number of CPUs]
-    #[arg(short = 'j', long = "jobs", global = true)]
+    #[arg(short = 'j', long = "jobs", global = true, value_name = "N")]
     jobs: Option<NonZeroUsize>,
 
     #[command(subcommand)]
@@ -156,5 +156,18 @@ mod tests {
             .expect("sync without -j must be accepted");
 
         assert_eq!(cli.jobs, None);
+    }
+
+    /// The README documents `-j, --jobs <N>`; without an explicit
+    /// `value_name`, clap derives one from the field name (`JOBS`)
+    /// instead, so `--help` would disagree with the README.
+    #[test]
+    fn help_shows_jobs_value_name_as_n() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(
+            help.contains("--jobs <N>"),
+            "expected --help to show `--jobs <N>`, got:\n{help}"
+        );
     }
 }
