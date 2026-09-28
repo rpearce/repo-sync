@@ -1,6 +1,5 @@
 use std::process::ExitCode;
 
-use clap;
 use rayon::prelude::*;
 
 use crate::commands::{partition_collisions, read_repo_list, report, unique_entry_count};
@@ -8,33 +7,6 @@ use crate::config::Config;
 use crate::error::RepoError;
 use crate::git::sync::sync_repo;
 use crate::utils::repo_list::parse_repo_list;
-
-/// Returns the `clap::Command` spec for the `sync` subcommand.
-pub fn command() -> clap::Command {
-    clap::Command::new("sync")
-        .about("Sync existing repositories (fetch + branch fast-forward)")
-        .arg(
-            clap::Arg::new("file")
-                .short('f')
-                .long("file")
-                .help("Repository list file")
-                .required(true),
-        )
-        .arg(
-            clap::Arg::new("out")
-                .short('o')
-                .long("out")
-                .help("Output directory")
-                .required(true),
-        )
-        .arg(
-            clap::Arg::new("verbose")
-                .short('v')
-                .long("verbose")
-                .help("Enable verbose output")
-                .action(clap::ArgAction::SetTrue),
-        )
-}
 
 /// Runs the `sync` command.
 /// - `config`: command configuration

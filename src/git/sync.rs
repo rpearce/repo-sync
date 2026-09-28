@@ -34,8 +34,7 @@ pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
     // `exists()` covers either way.
     if path.exists() {
         if path.join(".git").exists() {
-            sync_repo_branches(path.to_str().unwrap(), config)
-                .map_err(|source| RepoError::Sync { url, source })
+            sync_repo_branches(&path, config).map_err(|source| RepoError::Sync { url, source })
         } else {
             Err(RepoError::NotAGitRepository { path })
         }
@@ -50,11 +49,11 @@ pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
 /// - `command`: human-readable description of the command that failed
 /// - `path`: repository directory the command ran in
 /// - `stderr`: the command's captured stderr
-fn git_command_failed(command: &str, path: &str, stderr: &[u8]) -> io::Error {
+fn git_command_failed(command: &str, path: &Path, stderr: &[u8]) -> io::Error {
     io::Error::other(format!(
         "{} failed in {}: {}",
         command,
-        path,
+        path.display(),
         String::from_utf8_lossy(stderr).trim()
     ))
 }
@@ -66,7 +65,7 @@ fn git_command_failed(command: &str, path: &str, stderr: &[u8]) -> io::Error {
 /// Other branches: update directly from upstream without checkout.
 /// - `path`: local repository directory
 /// - `config`: command configuration
-fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
+fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
     // Step 1: Determine the current branch name
     // `git rev-parse --abbrev-ref HEAD` returns the branch currently checked out
     // Note: `--quiet` is accepted here but has no effect without
@@ -112,7 +111,7 @@ fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
     if !status_output.success() {
         return Err(std::io::Error::other(format!(
             "git fetch --all failed in {}",
-            path
+            path.display()
         )));
     }
 

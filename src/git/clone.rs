@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf, process};
+use std::{io, path::Path, process};
 
 use crate::config::Config;
 
@@ -6,7 +6,7 @@ use crate::config::Config;
 /// - `url`: repository URL
 /// - `path`: local repository target directory
 /// - `config`: command configuration
-pub fn git_clone(url: &str, path: &PathBuf, config: &Config) -> io::Result<()> {
+pub fn git_clone(url: &str, path: &Path, config: &Config) -> io::Result<()> {
     // Spawn a `git clone <url> <path>` process and wait for it to finish
     let mut clone_cmd = process::Command::new("git");
     clone_cmd.arg("clone").arg(url).arg(path);
