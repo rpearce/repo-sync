@@ -124,6 +124,29 @@ pub(crate) fn partition_collisions(entries: &[&str]) -> (Vec<String>, Vec<RepoEr
     (to_run, failures)
 }
 
+/// How many repo-list entries a run's verbose header line should report,
+/// given `partition_collisions`'s output. This is *not* the raw parsed
+/// entry count: `partition_collisions` drops exact-duplicate entries
+/// before returning, so counting the raw list would still include a
+/// dropped duplicate (e.g. printing "Cloning 2 repositories" for a list
+/// with one URL repeated, right above a summary that correctly says
+/// "Cloned 1 repositories"). Instead this sums `to_run` with the
+/// weighted failures `partition_collisions` already computed
+/// (`RepoError::failed_entries`, which is how a `DuplicateName` failure
+/// standing in for several colliding entries counts as more than one) —
+/// the same total `report`'s summary line uses, so the header and the
+/// summary always agree. Shared by `clone::run` and `sync::run` so this
+/// arithmetic lives in exactly one place.
+/// - `to_run`: survivors returned by `partition_collisions`
+/// - `failures`: precomputed failures returned by `partition_collisions`
+pub(crate) fn unique_entry_count(to_run: &[String], failures: &[RepoError]) -> usize {
+    to_run.len()
+        + failures
+            .iter()
+            .map(RepoError::failed_entries)
+            .sum::<usize>()
+}
+
 /// Print each failure, then the run's summary line, and return the
 /// resulting process exit code. Shared by `clone::run` and `sync::run`
 /// (and, through them, by `partition_collisions`'s pre-`par_iter`

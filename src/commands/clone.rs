@@ -3,7 +3,7 @@ use std::{path::Path, process::ExitCode};
 use clap;
 use rayon::prelude::*;
 
-use crate::commands::{partition_collisions, read_repo_list, report};
+use crate::commands::{partition_collisions, read_repo_list, report, unique_entry_count};
 use crate::config::Config;
 use crate::error::RepoError;
 use crate::git::clone::git_clone;
@@ -72,7 +72,7 @@ pub fn run(config: &Config) -> ExitCode {
     if config.verbose {
         println!(
             "Cloning {} repositories into {:?}",
-            repos.len(),
+            unique_entry_count(&to_run, &failures),
             config.output_dir
         );
     }

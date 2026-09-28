@@ -207,6 +207,11 @@ fn exact_duplicate_entry_is_ignored_with_a_warning() {
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
+        stdout.contains("Cloning 1 repositories"),
+        "the verbose header must count only the unique entry, not the raw \
+         parsed line count that still includes the dropped duplicate, got: {stdout:?}"
+    );
+    assert!(
         stdout.contains("Cloned 1 repositories: 1 ok, 0 failed"),
         "the summary must count only the unique entry, got: {stdout:?}"
     );
