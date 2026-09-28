@@ -21,7 +21,7 @@ fn sync_fast_forwards_non_current_tracking_branch_without_verbose() {
     env.push_commit(&remote, "feature", "feature commit 1");
 
     // 2. Clone it with repo-sync.
-    let fx = env.clone_remote(&remote, "dotfiles");
+    let fx = env.clone_remote(&remote);
 
     // 3. Make `feature` a local branch tracking `origin/feature`.
     env.git(&fx.clone, &["branch", "feature", "origin/feature"]);

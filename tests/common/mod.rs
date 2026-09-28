@@ -235,11 +235,24 @@ impl TestEnv {
     /// `out` directory, and bundle the result into a `Fixture`. Kept
     /// separate from `cloned` so a test can seed remote branches (e.g.
     /// via `push_commit`) before the clone happens.
-    /// - `remote`: path to a bare repo
-    /// - `name`: directory name the clone lands in under `out`
-    pub fn clone_remote(&self, remote: &Path, name: &str) -> Fixture {
+    ///
+    /// The clone's directory name is derived from `remote`'s own file
+    /// name (stripping a trailing `.git`), matching how `repo-sync` itself
+    /// names the clone from the URL's last path segment. There is no
+    /// separate `name` parameter: one that disagreed with `remote`'s
+    /// actual file name would make `Fixture.clone` point at a directory
+    /// `repo-sync` never created.
+    /// - `remote`: path to a bare repo, e.g. one from `bare_remote`
+    pub fn clone_remote(&self, remote: &Path) -> Fixture {
         let out = self.root().join("out");
         let remote_url = self.file_url(remote);
+        let remote_file_name = remote
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("remote path has a UTF-8 file name");
+        let name = remote_file_name
+            .strip_suffix(".git")
+            .unwrap_or(remote_file_name);
         let repos = self.repos_file(&format!("{name}.repos.txt"), &[&remote_url]);
 
         self.run("clone", &repos, &out).success();
@@ -258,7 +271,7 @@ impl TestEnv {
     /// - `name`: directory name for both the bare remote and its clone
     pub fn cloned(&self, name: &str) -> Fixture {
         let remote = self.bare_remote(name);
-        self.clone_remote(&remote, name)
+        self.clone_remote(&remote)
     }
 
     /// Apply the isolated environment to a `std::process::Command`: unset
