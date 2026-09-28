@@ -386,6 +386,97 @@ fn sync_verbose_shows_attributed_output_for_branch_update() {
     );
 }
 
+/// A local branch whose upstream has been deleted on the remote (a
+/// "gone" upstream, per `git branch -vv`) must be skipped silently
+/// instead of producing a fast-forward warning on every single run.
+/// Regression test: `fetch . origin/feature:feature` for such a branch
+/// exits non-zero ("couldn't find remote ref"), and the old
+/// `%(upstream:short)`-only format couldn't distinguish that from an
+/// ordinary diverged branch, so it warned every time `sync` ran.
+#[test]
+fn sync_skips_branch_whose_upstream_is_gone() {
+    let env = TestEnv::new();
+
+    let remote = env.bare_remote("dotfiles");
+    env.push_commit(&remote, "feature", "feature commit 1");
+
+    let fx = env.clone_remote(&remote);
+    env.git(&fx.clone, &["branch", "feature", "origin/feature"]);
+
+    // Delete `feature` on the remote directly, so the local branch's
+    // upstream becomes "[gone]" once `sync`'s own `fetch --prune` prunes
+    // the now-stale `origin/feature` remote-tracking ref.
+    env.git(&remote, &["branch", "-D", "feature"]);
+
+    // `main` must still fast-forward normally in the same run.
+    let remote_main_head = env.push_commit(&remote, "main", "remote commit");
+
+    let assert = env.run("sync", &fx.repos, &fx.out).success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        !stderr.contains("feature"),
+        "a [gone] upstream must produce no warning or error in \
+         non-verbose mode, got: {stderr:?}"
+    );
+
+    let local_main_head = env.git(&fx.clone, &["rev-parse", "main"]);
+    assert_eq!(
+        local_main_head, remote_main_head,
+        "main must still fast-forward even though feature's upstream is gone"
+    );
+}
+
+/// A local tag literally named `origin/main` must never shadow the
+/// remote-tracking branch `origin/main` when `sync` fast-forwards `main`.
+/// Regression test: git's ref-disambiguation rules check `refs/tags/`
+/// before `refs/remotes/`, so the old short-name refspec/merge target
+/// (`origin/main`) resolved to the tag instead, silently turning the
+/// fast-forward into a no-op.
+#[test]
+fn sync_fast_forwards_despite_ambiguous_short_ref() {
+    let env = TestEnv::new();
+    let fx = env.cloned("dotfiles");
+
+    // A tag pointing at the current (old) commit, named exactly like the
+    // short form of `main`'s upstream.
+    env.git(&fx.clone, &["tag", "origin/main"]);
+
+    let remote_head = env.push_commit(&fx.remote, "main", "remote commit");
+
+    env.run("sync", &fx.repos, &fx.out).success();
+
+    let local_head = env.git(&fx.clone, &["rev-parse", "main"]);
+    assert_eq!(
+        local_head, remote_head,
+        "main must fast-forward to the remote's new commit even though a \
+         local tag named 'origin/main' shadows the short upstream name"
+    );
+}
+
+/// A clone of an empty remote has an "unborn" `HEAD`: `git symbolic-ref -q
+/// HEAD` resolves it to `refs/heads/main`, but that ref doesn't exist yet
+/// because nothing has ever been committed, so `git rev-parse
+/// --abbrev-ref HEAD` fails there. Regression test: `sync_repo_branches`
+/// used to determine the current branch via `rev-parse`, turning that
+/// failure into a hard `Sync` error for every repo-list entry pointing at
+/// an empty remote.
+#[test]
+fn sync_succeeds_on_unborn_head_after_cloning_empty_remote() {
+    let env = TestEnv::new();
+    let remote = env.empty_bare_remote("empty");
+    let fx = env.clone_remote(&remote);
+
+    let assert = env.run("sync", &fx.repos, &fx.out).success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        !stderr.to_lowercase().contains("error"),
+        "sync of a clone with an unborn HEAD must not report an error, \
+         got: {stderr:?}"
+    );
+}
+
 /// `sync` must never delete a local tag that was never pushed to the
 /// remote. Regression test for the bug where `git fetch --all -Pp`
 /// includes `--prune-tags`, which deletes any local tag the remote

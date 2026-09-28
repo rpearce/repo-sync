@@ -114,12 +114,18 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("<unknown>");
 
-    // Step 1: Determine the current branch name
-    // `git rev-parse --abbrev-ref HEAD` returns the branch currently checked out
-    let current_branch = command::git_output(path, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .map_err(|e| command::command_failed("git rev-parse --abbrev-ref HEAD", path, e))?
-        .trim()
-        .to_string();
+    // Step 1: Determine HEAD's full symbolic ref, if it has one.
+    // `git symbolic-ref -q HEAD` resolves HEAD's symbolic target without
+    // requiring it to already point at a commit, unlike `rev-parse
+    // --abbrev-ref HEAD` (which fails on an "unborn" HEAD — e.g. right
+    // after cloning a remote with no commits yet, where HEAD still
+    // points at `refs/heads/main` but that ref doesn't exist yet). `-q`
+    // also makes it fail quietly (no stderr) on a detached HEAD, which
+    // correctly means "no current branch": every local branch is then
+    // updated the same way as a non-current one, via `fetch .` below.
+    let current_branch_ref = command::git_output(path, &["symbolic-ref", "-q", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string());
 
     // Step 2: Fetch all remotes and prune deleted remote-tracking branches.
     // This is equivalent to `git fetch --all --prune --quiet`. Deliberately
@@ -128,31 +134,58 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
     command::git_run(path, &["fetch", "--all", "--prune"], config.verbose)
         .map_err(|_| io::Error::other(format!("git fetch --all failed in {}", path.display())))?;
 
-    // Step 3: List all local branches and their upstream branches
-    // Format: "<local-branch>:<upstream-branch>"
+    // Step 3: List all local branches together with their upstream's full
+    // refname and tracking status. Full refnames (not
+    // `%(refname:short)`/`%(upstream:short)`) avoid a short name like
+    // `origin/main` ever being resolved against the wrong ref: git's
+    // rev-parse disambiguation checks `refs/tags/<name>` before
+    // `refs/remotes/<name>`, so a local tag named e.g. `origin/main`
+    // could otherwise shadow the actual upstream in `merge --ff-only` /
+    // `fetch .` below. `%(upstream:track)` reports `[gone]` when the
+    // upstream's remote-tracking ref no longer exists because its branch
+    // was deleted on the remote. Fields are NUL (`%00`) separated so a
+    // `/`-containing refname can never be confused with a `:`-separated
+    // delimiter.
     let branch_pairs = command::git_output(
         path,
         &[
             "for-each-ref",
-            "--format=%(refname:short):%(upstream:short)",
+            "--format=%(refname)%00%(upstream)%00%(upstream:track)",
             "refs/heads",
         ],
     )
     .map_err(|e| command::command_failed("git for-each-ref refs/heads", path, e))?;
 
-    // Step 4: Iterate over each local:upstream pair
+    // Step 4: Iterate over each local branch and its upstream.
     for line in branch_pairs.lines() {
-        // Skip branches that have no upstream (they end with ':')
-        if line.ends_with(":") {
+        let mut fields = line.splitn(3, '\0');
+        let local_ref = fields.next().unwrap_or("").trim();
+        let upstream_ref = fields.next().unwrap_or("").trim();
+        let track = fields.next().unwrap_or("").trim();
+
+        // Branch name for messages, e.g. "feature" instead of
+        // "refs/heads/feature".
+        let local = local_ref.strip_prefix("refs/heads/").unwrap_or(local_ref);
+
+        if upstream_ref.is_empty() {
+            // No upstream configured at all: nothing to update from.
             continue;
         }
 
-        // Split into local and upstream branch names
-        let mut parts = line.splitn(2, ':');
-        let local = parts.next().unwrap().trim();
-        let upstream = parts.next().unwrap().trim();
+        if track == "[gone]" {
+            // The upstream's remote-tracking ref no longer exists (its
+            // branch was deleted on the remote). Fetching or merging
+            // from it would fail with the same git error on every single
+            // run, for a reason the user can't fix by re-running sync,
+            // so this isn't a failure or even a one-off warning: just
+            // skip it, and only mention it at all in verbose mode.
+            if config.verbose {
+                println!("Skipping {local} (upstream gone)");
+            }
+            continue;
+        }
 
-        if local == current_branch {
+        if Some(local_ref) == current_branch_ref.as_deref() {
             // Current branch: merge from upstream if there are no tracked
             // modifications.
 
@@ -195,7 +228,7 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
                         "advice.diverging=false",
                         "merge",
                         "--ff-only",
-                        upstream,
+                        upstream_ref,
                     ],
                 ) {
                     Ok(output) => {
@@ -211,14 +244,15 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
             }
         } else {
             // Non-current branch: update directly from upstream without
-            // checkout. Equivalent to: `git fetch . <upstream>:<local>`.
+            // checkout. Equivalent to: `git fetch . <upstream-full>:<local-full>`.
             // Captured (not inherited), for the same reason as the merge
-            // above: a non-fast-forward here (e.g. a diverged branch, or
-            // a `[gone]` upstream) is a warning, not a failure. `fetch`
-            // writes its progress (`From . ... -> feature`) to stderr
-            // even on success, so verbose mode needs the combined output
-            // to show it, attributed to this repo.
-            let refspec = format!("{}:{}", upstream, local);
+            // above: a non-fast-forward here (e.g. a diverged branch) is
+            // a warning, not a failure (a `[gone]` upstream never reaches
+            // this point at all; it's skipped above). `fetch` writes its
+            // progress (`From . ... -> feature`) to stderr even on
+            // success, so verbose mode needs the combined output to show
+            // it, attributed to this repo.
+            let refspec = format!("{upstream_ref}:{local_ref}");
             match command::git_output_combined(path, &["fetch", ".", &refspec]) {
                 Ok(output) => {
                     if config.verbose {
