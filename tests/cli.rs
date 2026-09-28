@@ -327,6 +327,15 @@ fn sync_with_jobs_flag_succeeds() {
     let out = env.root().join("out");
 
     env.run_with("sync", &repos, &out, &["-j", "1"]).success();
+
+    assert!(
+        out.join("a").exists(),
+        "-j 1 must still clone the first entry"
+    );
+    assert!(
+        out.join("b").exists(),
+        "-j 1 must still clone the second entry"
+    );
 }
 
 /// Running `repo-sync` with no arguments at all must print help and exit
