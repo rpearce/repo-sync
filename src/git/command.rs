@@ -28,7 +28,8 @@ const INHERITED_GIT_ENV_VARS: &[&str] = &[
 /// branch-level calls that go through `git_output`/`git_output_combined`
 /// instead (captured, not inherited, so `--quiet` wouldn't do anything),
 /// and `run_clone` has no `-C` directory to route through `git_run` at
-/// all, so it makes its own unconditional `--quiet` decision.
+/// all, so it makes its own `--quiet` decision (also conditional on
+/// `verbose`) directly.
 const QUIET_SUBCOMMANDS: &[&str] = &["fetch"];
 
 /// Apply the isolation every git command this module builds needs:
@@ -92,14 +93,31 @@ pub fn git_output_combined(dir: &Path, args: &[&str]) -> io::Result<String> {
     let output = git(dir).args(args).output()?;
 
     if output.status.success() {
-        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-        combined.push_str(&String::from_utf8_lossy(&output.stderr));
-        Ok(combined)
+        Ok(join_stdout_stderr(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        ))
     } else {
         Err(io::Error::other(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ))
     }
+}
+
+/// Join a successful command's stdout and stderr into one string, stdout
+/// first, inserting a `\n` between them when `stdout` is non-empty and
+/// doesn't already end with one. Without this, a subcommand whose stdout
+/// doesn't end in a newline would have stderr's first line smashed onto
+/// the end of stdout's last line instead of starting on its own line.
+/// - `stdout`: the command's captured stdout
+/// - `stderr`: the command's captured stderr, appended after `stdout`
+fn join_stdout_stderr(stdout: &str, stderr: &str) -> String {
+    let mut combined = stdout.to_string();
+    if !combined.is_empty() && !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    combined.push_str(stderr);
+    combined
 }
 
 /// Run `git <args>` in `dir` with stdout/stderr inherited (so the user
@@ -137,8 +155,8 @@ pub fn git_run(dir: &Path, args: &[&str], verbose: bool) -> io::Result<()> {
 /// this module, clone has no existing directory to change into first
 /// (it creates `path`, including any missing parent directories,
 /// itself), so it can't share `git_run`'s `-C`-based builder and makes
-/// its own unconditional `--quiet` decision instead of consulting
-/// `QUIET_SUBCOMMANDS`.
+/// its own `--quiet` decision (still conditional on `verbose`) directly
+/// instead of consulting `QUIET_SUBCOMMANDS`.
 /// - `url`: repository URL
 /// - `path`: local repository target directory
 /// - `verbose`: when false, appends `--quiet`
@@ -239,12 +257,37 @@ mod tests {
     }
 
     #[test]
+    fn join_stdout_stderr_inserts_newline_when_stdout_lacks_one() {
+        assert_eq!(
+            join_stdout_stderr("no trailing newline", "stderr line"),
+            "no trailing newline\nstderr line"
+        );
+    }
+
+    #[test]
+    fn join_stdout_stderr_does_not_add_a_second_newline() {
+        assert_eq!(
+            join_stdout_stderr("already has a newline\n", "stderr line"),
+            "already has a newline\nstderr line"
+        );
+    }
+
+    #[test]
+    fn join_stdout_stderr_with_empty_stdout_is_just_stderr() {
+        assert_eq!(join_stdout_stderr("", "stderr only"), "stderr only");
+    }
+
+    #[test]
     fn git_output_combined_returns_stdout_on_success() {
         let dir = tempdir().expect("create tempdir");
-        let init_status = process::Command::new("git")
-            .arg("init")
-            .arg("-q")
-            .arg(dir.path())
+        // Built via this module's own `git(dir)` helper, not a raw
+        // `process::Command::new("git")`, so this test stays isolated
+        // from an inherited `GIT_DIR`: unlike `-C dir`, an inherited
+        // `GIT_DIR` overrides where `git init` (and every other command)
+        // actually operates, so a raw command here could silently init
+        // some other directory instead of `dir`.
+        let init_status = git(dir.path())
+            .args(["init", "-q"])
             .status()
             .expect("spawn git init");
         assert!(init_status.success(), "git init must succeed");
