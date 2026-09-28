@@ -221,12 +221,23 @@ impl TestEnv {
     /// - `repos`: repo-list file, e.g. from `repos_file` or a `Fixture`
     /// - `out`: output directory, e.g. from a `Fixture`
     pub fn run(&self, sub: &str, repos: &Path, out: &Path) -> Assert {
+        self.run_with(sub, repos, out, &[])
+    }
+
+    /// Like `run`, but for a test that needs extra flags beyond `-f` and
+    /// `-o` (e.g. `-v`).
+    /// - `sub`: subcommand, e.g. `"clone"` or `"sync"`
+    /// - `repos`: repo-list file, e.g. from `repos_file` or a `Fixture`
+    /// - `out`: output directory, e.g. from a `Fixture`
+    /// - `extra`: additional arguments, e.g. `&["-v"]`
+    pub fn run_with(&self, sub: &str, repos: &Path, out: &Path, extra: &[&str]) -> Assert {
         self.repo_sync()
             .arg(sub)
             .arg("-f")
             .arg(repos)
             .arg("-o")
             .arg(out)
+            .args(extra)
             .assert()
     }
 

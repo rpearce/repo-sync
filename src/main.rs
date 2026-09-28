@@ -38,8 +38,8 @@ fn main() -> ExitCode {
         .subcommand(commands::sync::command())
         .get_matches();
 
-    if git::preflight().is_err() {
-        eprintln!("error: git not found on PATH");
+    if let Err(e) = git::preflight() {
+        eprintln!("error: git not found on PATH ({e})");
         return ExitCode::FAILURE;
     }
 

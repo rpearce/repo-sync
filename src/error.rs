@@ -24,3 +24,11 @@ impl fmt::Display for RepoError {
         }
     }
 }
+
+impl std::error::Error for RepoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RepoError::Clone { source, .. } | RepoError::Sync { source, .. } => Some(source),
+        }
+    }
+}

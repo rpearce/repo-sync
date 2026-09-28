@@ -43,6 +43,10 @@ fn failed_clone_exits_nonzero() {
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert!(
+        stderr.contains(&format!("Error cloning {url}")),
+        "stderr must contain the per-repo failure line, got: {stderr:?}"
+    );
+    assert!(
         stderr.contains("Cloned 1 repositories: 0 ok, 1 failed"),
         "stderr must contain the summary line, got: {stderr:?}"
     );
@@ -55,16 +59,7 @@ fn sync_reports_summary_when_verbose() {
     let env = TestEnv::new();
     let fx = env.cloned("dotfiles");
 
-    let assert = env
-        .repo_sync()
-        .arg("sync")
-        .arg("-f")
-        .arg(&fx.repos)
-        .arg("-o")
-        .arg(&fx.out)
-        .arg("-v")
-        .assert()
-        .success();
+    let assert = env.run_with("sync", &fx.repos, &fx.out, &["-v"]).success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
