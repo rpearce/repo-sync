@@ -12,6 +12,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use assert_cmd::Command as RepoSyncCommand;
+use assert_cmd::assert::Assert;
 use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 
@@ -36,6 +37,22 @@ pub const INHERITED_GIT_ENV_VARS: &[&str] = &[
     "GIT_CONFIG_COUNT",
     "XDG_CONFIG_HOME",
 ];
+
+/// A repository cloned by `repo-sync clone` for a `sync` test, bundling
+/// the pieces most such tests need so they don't each repeat the
+/// bare-remote-plus-clone boilerplate. Built by `TestEnv::cloned` or
+/// `TestEnv::clone_remote`.
+pub struct Fixture {
+    /// The bare remote the clone came from (e.g. for `push_commit`).
+    pub remote: PathBuf,
+    /// The repo-list file `repo-sync` was pointed at to create this clone
+    /// (reusable for a later `sync` invocation via `TestEnv::run`).
+    pub repos: PathBuf,
+    /// The output directory `repo-sync` cloned into.
+    pub out: PathBuf,
+    /// The clone's local directory, under `out`.
+    pub clone: PathBuf,
+}
 
 /// An isolated sandbox for one test: its own `HOME`, an empty global git
 /// config, and a fixed author/committer identity. Every git invocation
@@ -85,6 +102,16 @@ impl TestEnv {
         );
 
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// Write `key = value` into the sandbox's isolated global git config,
+    /// via `git config --global` (rather than a test poking the config
+    /// file directly), so it stays consistent with whatever else git
+    /// writes there.
+    /// - `key`: config key, e.g. `"pull.rebase"`
+    /// - `value`: config value, e.g. `"true"`
+    pub fn set_global_config(&self, key: &str, value: &str) {
+        self.git(self.root(), &["config", "--global", key, value]);
     }
 
     /// Create a bare repository named `name` under the sandbox, seed it
@@ -184,6 +211,54 @@ impl TestEnv {
         let mut cmd = RepoSyncCommand::from_std(std_cmd);
         cmd.timeout(Duration::from_secs(60));
         cmd
+    }
+
+    /// Run `repo-sync <sub> -f <repos> -o <out>` through the isolated
+    /// environment and return the resulting `Assert`, for the caller to
+    /// finish (e.g. `.success()`). Shared by every test that drives
+    /// `clone` or `sync` so the argument wiring lives in one place.
+    /// - `sub`: subcommand, e.g. `"clone"` or `"sync"`
+    /// - `repos`: repo-list file, e.g. from `repos_file` or a `Fixture`
+    /// - `out`: output directory, e.g. from a `Fixture`
+    pub fn run(&self, sub: &str, repos: &Path, out: &Path) -> Assert {
+        self.repo_sync()
+            .arg(sub)
+            .arg("-f")
+            .arg(repos)
+            .arg("-o")
+            .arg(out)
+            .assert()
+    }
+
+    /// Clone an existing bare `remote` (e.g. from `bare_remote`) with
+    /// `repo-sync clone`, asserted to succeed, into the sandbox's shared
+    /// `out` directory, and bundle the result into a `Fixture`. Kept
+    /// separate from `cloned` so a test can seed remote branches (e.g.
+    /// via `push_commit`) before the clone happens.
+    /// - `remote`: path to a bare repo
+    /// - `name`: directory name the clone lands in under `out`
+    pub fn clone_remote(&self, remote: &Path, name: &str) -> Fixture {
+        let out = self.root().join("out");
+        let remote_url = self.file_url(remote);
+        let repos = self.repos_file(&format!("{name}.repos.txt"), &[&remote_url]);
+
+        self.run("clone", &repos, &out).success();
+
+        Fixture {
+            remote: remote.to_path_buf(),
+            repos,
+            out: out.clone(),
+            clone: out.join(name),
+        }
+    }
+
+    /// Create a bare remote named `name` and immediately clone it (see
+    /// `clone_remote`). Convenience for the common case where nothing
+    /// needs to happen on the remote before the clone.
+    /// - `name`: directory name for both the bare remote and its clone
+    pub fn cloned(&self, name: &str) -> Fixture {
+        let remote = self.bare_remote(name);
+        self.clone_remote(&remote, name)
     }
 
     /// Apply the isolated environment to a `std::process::Command`: unset
