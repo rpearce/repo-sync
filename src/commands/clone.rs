@@ -7,7 +7,7 @@ use crate::commands::{read_repo_list, report};
 use crate::config::Config;
 use crate::error::RepoError;
 use crate::git::clone::git_clone;
-use crate::utils::url::normalize;
+use crate::utils::url::{normalize, repo_name};
 
 /// Returns the `clap::Command` spec for the `clone` subcommand.
 pub fn command() -> clap::Command {
@@ -42,8 +42,8 @@ pub fn command() -> clap::Command {
 /// - `config`: command configuration
 pub fn clone_repo(url: &str, config: &Config) -> Result<(), RepoError> {
     let url = normalize(url);
-    let name = url.split('/').next_back().unwrap().replace(".git", "");
-    let path = Path::new(&config.output_dir).join(&name);
+    let name = repo_name(&url).ok_or_else(|| RepoError::NoDirectoryName { entry: url.clone() })?;
+    let path = Path::new(&config.output_dir).join(name);
 
     if path.exists() {
         if config.verbose {

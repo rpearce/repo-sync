@@ -3,7 +3,7 @@ use std::{io, path::Path, process};
 use crate::config::Config;
 use crate::error::RepoError;
 use crate::git::clone::git_clone;
-use crate::utils::url::normalize;
+use crate::utils::url::{normalize, repo_name};
 
 /// Sync a repository at `url` into `base_dir`: clone if missing, otherwise
 /// fetch and fast-forward it. Never runs a plain `git pull`: that would
@@ -19,16 +19,26 @@ pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
 
     // Step 2: Determine the repository name from the URL
     // Example: "https://github.com/user/repo.git" -> "repo"
-    let name = url.split("/").last().unwrap().replace(".git", "");
+    let name = repo_name(&url).ok_or_else(|| RepoError::NoDirectoryName { entry: url.clone() })?;
 
     // Step 3: Construct the full local path for this repository
     // Example: base_dir="/home/user/repos", name="repo" -> "/home/user/repos/repo"
     let path = Path::new(&config.output_dir).join(name);
 
-    // Step 4: Check if the repository already exists locally
+    // Step 4: Check if the repository already exists locally. A plain
+    // `path.exists()` isn't enough: git's own repository discovery walks
+    // up from `-C path` to the nearest enclosing `.git` if `path` itself
+    // isn't a repo, so running git there would silently operate on
+    // whatever repository happens to enclose `path` instead. `.git` may
+    // be a file rather than a directory (worktrees, submodules), which
+    // `exists()` covers either way.
     if path.exists() {
-        sync_repo_branches(path.to_str().unwrap(), config)
-            .map_err(|source| RepoError::Sync { url, source })
+        if path.join(".git").exists() {
+            sync_repo_branches(path.to_str().unwrap(), config)
+                .map_err(|source| RepoError::Sync { url, source })
+        } else {
+            Err(RepoError::NotAGitRepository { path })
+        }
     } else {
         git_clone(&url, &path, config).map_err(|source| RepoError::Clone { url, source })
     }
