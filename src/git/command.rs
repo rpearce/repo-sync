@@ -21,11 +21,15 @@ const INHERITED_GIT_ENV_VARS: &[&str] = &[
     "GIT_PREFIX",
 ];
 
-/// Subcommands that accept a `--quiet` flag anywhere among their own
-/// arguments (verified: git accepts it before or after a positional
-/// argument, e.g. `git merge --ff-only <upstream> --quiet`). `git_run`
-/// only appends `--quiet` for these.
-const QUIET_SUBCOMMANDS: &[&str] = &["clone", "fetch", "merge"];
+/// Subcommands `git_run` appends `--quiet` for (verified: git accepts it
+/// anywhere among a subcommand's own arguments, e.g. `git merge --ff-only
+/// <upstream> --quiet`). Kept to exactly what `git_run` is actually
+/// called with (today, just `fetch --all`): `merge` and `fetch .` are
+/// branch-level calls that go through `git_output`/`git_output_combined`
+/// instead (captured, not inherited, so `--quiet` wouldn't do anything),
+/// and `run_clone` has no `-C` directory to route through `git_run` at
+/// all, so it makes its own unconditional `--quiet` decision.
+const QUIET_SUBCOMMANDS: &[&str] = &["fetch"];
 
 /// Apply the isolation every git command this module builds needs:
 /// never prompt on a terminal (`GIT_TERMINAL_PROMPT=0`, and a null
@@ -121,7 +125,8 @@ pub fn git_run(dir: &Path, args: &[&str], verbose: bool) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "git {args:?} failed in {}",
+            "git {} failed in {}",
+            args.join(" "),
             dir.display()
         )))
     }
@@ -131,8 +136,9 @@ pub fn git_run(dir: &Path, args: &[&str], verbose: bool) -> io::Result<()> {
 /// (see `isolate`) but without `-C`: unlike every other command in
 /// this module, clone has no existing directory to change into first
 /// (it creates `path`, including any missing parent directories,
-/// itself). Appends `--quiet` when `verbose` is false, matching
-/// `git_run`'s handling of `clone` in `QUIET_SUBCOMMANDS`.
+/// itself), so it can't share `git_run`'s `-C`-based builder and makes
+/// its own unconditional `--quiet` decision instead of consulting
+/// `QUIET_SUBCOMMANDS`.
 /// - `url`: repository URL
 /// - `path`: local repository target directory
 /// - `verbose`: when false, appends `--quiet`
@@ -267,6 +273,28 @@ mod tests {
         assert!(
             err.to_string().contains("not a git repository"),
             "error message must contain git's stderr, got: {err}"
+        );
+    }
+
+    #[test]
+    fn git_run_error_message_uses_plain_args_not_debug_formatting() {
+        // `status` isn't a quiet-eligible subcommand, so `verbose: true`
+        // here just keeps the test focused on the error message shape,
+        // not the `--quiet` logic.
+        let dir = tempdir().expect("create tempdir");
+
+        let result = git_run(dir.path(), &["status", "--porcelain"], true);
+
+        let err = result.expect_err("status in a non-repo dir must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("git status --porcelain failed"),
+            "error message must join args with spaces (not Debug-format \
+             the slice), got: {message}"
+        );
+        assert!(
+            !message.contains('"'),
+            "error message must not contain Debug-formatting quotes, got: {message}"
         );
     }
 }
