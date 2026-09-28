@@ -146,7 +146,7 @@ anything:
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; cd "$tmp"
   curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET"
   curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET.sha256"
-  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256"
+  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256" || { echo "error: $ASSET.sha256 does not list $ASSET" >&2; exit 1; }
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum -c "$ASSET.sha256"
   else
@@ -174,7 +174,7 @@ workflow actually built it.
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; cd "$tmp"
   curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET"
   curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET.sha256"
-  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256"
+  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256" || { echo "error: $ASSET.sha256 does not list $ASSET" >&2; exit 1; }
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum -c "$ASSET.sha256"
   else
