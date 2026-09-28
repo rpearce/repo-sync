@@ -82,15 +82,17 @@ fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
         .trim()
         .to_string();
 
-    // Step 2: Fetch all remotes and prune deleted branches and tags
-    // This is equivalent to `git fetch --all -Pp --quiet`
+    // Step 2: Fetch all remotes and prune deleted remote-tracking branches.
+    // This is equivalent to `git fetch --all --prune --quiet`. Deliberately
+    // not `-Pp`/`--prune-tags`: that also deletes local tags the remote
+    // doesn't have, including ones that were never pushed.
     let mut status_output_cmd = process::Command::new("git");
     status_output_cmd
         .arg("-C")
         .arg(path)
         .arg("fetch")
         .arg("--all")
-        .arg("-Pp");
+        .arg("--prune");
     if !config.verbose {
         status_output_cmd.arg("--quiet");
     }

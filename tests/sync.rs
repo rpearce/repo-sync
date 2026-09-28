@@ -138,3 +138,24 @@ fn sync_fast_forwards_current_branch_with_only_untracked_files() {
     let local_head_after = env.git(&fx.clone, &["rev-parse", "HEAD"]);
     assert_eq!(local_head_after, remote_head);
 }
+
+/// `sync` must never delete a local tag that was never pushed to the
+/// remote. Regression test for the bug where `git fetch --all -Pp`
+/// includes `--prune-tags`, which deletes any local tag the remote
+/// doesn't have — including one that only ever existed locally.
+#[test]
+fn sync_preserves_local_tags() {
+    let env = TestEnv::new();
+    let fx = env.cloned("dotfiles");
+
+    // Create a tag locally that is never pushed to the remote.
+    env.git(&fx.clone, &["tag", "local-only-tag"]);
+
+    env.run("sync", &fx.repos, &fx.out).success();
+
+    let tags = env.git(&fx.clone, &["tag", "--list"]);
+    assert!(
+        tags.lines().any(|t| t == "local-only-tag"),
+        "local-only-tag must survive sync, got tags: {tags:?}"
+    );
+}
