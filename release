@@ -4,6 +4,11 @@ set -euo pipefail
 # Simple release script for repo-sync
 # Usage: ./release <version>
 # Example: ./release 0.2.0
+#
+# This only bumps the version and commits the change on the current
+# branch; it does not tag or push. Tag the merge commit on main
+# after the resulting PR has been merged (see the printed
+# instructions at the end).
 
 if [ $# -ne 1 ]; then
   echo "Usage: $0 <version>"
@@ -21,15 +26,17 @@ fi
 
 echo "Preparing release $VERSION..."
 
-# Update Cargo.toml
-sed -i.bak "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+# Update only the [package] version line in Cargo.toml (the first
+# "version = " line), leaving any later "version = " line (e.g. in
+# [dependencies]) untouched.
+sed -i.bak '/^\[package\]/,/^\[/{s/^version = .*/version = "'"$VERSION"'"/}' Cargo.toml
 rm -f Cargo.toml.bak
 
 # Run tests
 echo "Running tests..."
 cargo test
 
-echo "Creating git tag $VERSION..."
+echo "Committing release $VERSION..."
 git add Cargo.toml Cargo.lock
 
 # Only commit if there are changes
@@ -37,11 +44,11 @@ if ! git diff --cached --quiet; then
   git commit -m "Release $VERSION"
 fi
 
-# Create tag if it doesn't exist
-if git tag -l | grep -q "^$VERSION$"; then
-  echo "Tag $VERSION already exists"
-else
-  git tag -a "$VERSION" -m "Release $VERSION"
-fi
+cat <<EOF
 
-echo "Push with: git push origin main && git push origin $VERSION"
+Next steps:
+  1. Open a PR for this branch and get it merged into main.
+  2. After it merges, tag the merge commit and push the tag:
+
+       git switch main && git pull --ff-only && git tag -a $VERSION -m "Release $VERSION" && git push origin $VERSION
+EOF
