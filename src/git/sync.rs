@@ -34,6 +34,21 @@ pub fn sync_repo(url: &str, config: &Config) {
     }
 }
 
+/// Build an `io::Error` for a failed git command that includes the
+/// command and git's stderr, so a failure is never mistaken for success
+/// (e.g. a failed `status --porcelain` must never be read as "clean").
+/// - `command`: human-readable description of the command that failed
+/// - `path`: repository directory the command ran in
+/// - `stderr`: the command's captured stderr
+fn git_command_failed(command: &str, path: &str, stderr: &[u8]) -> io::Error {
+    io::Error::other(format!(
+        "{} failed in {}: {}",
+        command,
+        path,
+        String::from_utf8_lossy(stderr).trim()
+    ))
+}
+
 /// Synchronize all local branches in the repository at `path` with their upstreams.
 /// Current branch: fast-forward merge if working tree is clean.
 /// Other branches: update directly from upstream without checkout.
@@ -42,18 +57,23 @@ pub fn sync_repo(url: &str, config: &Config) {
 fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
     // Step 1: Determine the current branch name
     // `git rev-parse --abbrev-ref HEAD` returns the branch currently checked out
-    let mut current_branch_output_cmd = process::Command::new("git");
-    current_branch_output_cmd
+    // Note: `--quiet` is not a valid flag for `rev-parse` here; omit it and
+    // check the exit status directly instead.
+    let current_branch_output = process::Command::new("git")
         .arg("-C")
         .arg(path)
         .arg("rev-parse")
         .arg("--abbrev-ref")
-        .arg("HEAD");
-    if !config.verbose {
-        current_branch_output_cmd.arg("--quiet");
-    }
+        .arg("HEAD")
+        .output()?;
 
-    let current_branch_output = current_branch_output_cmd.output()?;
+    if !current_branch_output.status.success() {
+        return Err(git_command_failed(
+            "git rev-parse --abbrev-ref HEAD",
+            path,
+            &current_branch_output.stderr,
+        ));
+    }
 
     let current_branch = String::from_utf8_lossy(&current_branch_output.stdout)
         .trim()
@@ -83,18 +103,24 @@ fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
 
     // Step 3: List all local branches and their upstream branches
     // Format: "<local-branch>:<upstream-branch>"
-    let mut branch_pairs_output_cmd = process::Command::new("git");
-    branch_pairs_output_cmd
+    // Note: `--quiet` is not a valid flag for `for-each-ref`; passing it
+    // made this command exit non-zero, so `branch_pairs` was always empty
+    // and no non-current branch was ever updated without `-v`.
+    let branch_pairs_output = process::Command::new("git")
         .arg("-C")
         .arg(path)
         .arg("for-each-ref")
         .arg("--format=%(refname:short):%(upstream:short)")
-        .arg("refs/heads");
-    if !config.verbose {
-        branch_pairs_output_cmd.arg("--quiet");
-    }
+        .arg("refs/heads")
+        .output()?;
 
-    let branch_pairs_output = branch_pairs_output_cmd.output()?;
+    if !branch_pairs_output.status.success() {
+        return Err(git_command_failed(
+            "git for-each-ref refs/heads",
+            path,
+            &branch_pairs_output.stderr,
+        ));
+    }
 
     let branch_pairs = String::from_utf8_lossy(&branch_pairs_output.stdout);
 
@@ -114,34 +140,42 @@ fn sync_repo_branches(path: &str, config: &Config) -> io::Result<()> {
             // Current branch: merge from upstream if working tree is clean
 
             // Check if working tree is clean using `git status --porcelain`
-            let mut status_out_cmd = process::Command::new("git");
-            status_out_cmd
+            // Note: `--quiet` is not a valid flag for `status` here; omit
+            // it and check the exit status directly. Fail closed: if the
+            // status check itself fails, we must not treat that as
+            // "clean" and merge anyway.
+            let status_out = process::Command::new("git")
                 .arg("-C")
                 .arg(path)
                 .arg("status")
-                .arg("--porcelain");
-            if !config.verbose {
-                status_out_cmd.arg("--quiet");
-            }
+                .arg("--porcelain")
+                .output()?;
 
-            let status_out = status_out_cmd.output()?;
+            if !status_out.status.success() {
+                return Err(git_command_failed(
+                    "git status --porcelain",
+                    path,
+                    &status_out.stderr,
+                ));
+            }
 
             let clean = status_out.stdout.is_empty();
 
             if clean {
-                // Safe fast-forward merge from upstream branch
+                // Safe fast-forward merge from upstream branch.
+                // `--quiet` goes after the `merge` subcommand: it is not
+                // a valid top-level git option.
                 let mut merge_cmd = process::Command::new("git");
+                merge_cmd.arg("-C").arg(path).arg("merge").arg("--ff-only");
                 if !config.verbose {
                     merge_cmd.arg("--quiet");
                 }
+                merge_cmd.arg(upstream);
 
-                let _ = merge_cmd
-                    .arg("-C")
-                    .arg(path)
-                    .arg("merge")
-                    .arg("--ff-only")
-                    .arg(upstream)
-                    .status();
+                // Non-fatal: merge failures are reported by inherited
+                // stderr, not turned into a returned error (unchanged
+                // from before; out of scope for this fix).
+                let _ = merge_cmd.status();
             } else if config.verbose {
                 // Working tree dirty: skip merge to avoid conflicts
                 println!("Skipping merge on {} (dirty branch)", local);
