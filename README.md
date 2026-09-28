@@ -174,15 +174,15 @@ repo-sync <clone|sync> -f repos.txt -o ./repos
 These apply to both subcommands and may appear before or after them:
 
 - `-v, --verbose`: Print the run's header line, a few informational
-  lines (e.g. an existing clone being skipped, a dirty current branch,
-  or a `[gone]` upstream — named by entry/branch, not by repository),
-  and the summary line on stdout when the run succeeds. Attribution is
-  partial: a branch-level fast-forward or fetch is printed as
-  `<repo>: <line>`, but `git clone` and `git fetch --all` inherit the
-  terminal directly (they're passed `--quiet` without `-v`), so their
-  own output appears unattributed to any repository. Without `-v`,
-  stdout gets nothing; warnings (e.g. a duplicate entry, a diverged
-  branch) still go to stderr regardless.
+  lines, and the summary line on stdout when the run succeeds.
+  Attribution is partial: a branch-level fast-forward or fetch, a
+  skipped dirty current branch, and a skipped `[gone]` upstream are each
+  printed as `<repo>: <line>`; an existing clone being skipped is named
+  by entry only, without that `<repo>: ` prefix; and `git clone` and
+  `git fetch --all` inherit the terminal directly (they're passed
+  `--quiet` without `-v`), so their own output appears unattributed to
+  any repository. Without `-v`, stdout gets nothing; warnings (e.g. a
+  duplicate entry, a diverged branch) still go to stderr regardless.
 - `-j, --jobs <N>`: Limit how many repositories are processed in
   parallel. Defaults to the number of CPUs; `RAYON_NUM_THREADS` also
   works. `0` is rejected.

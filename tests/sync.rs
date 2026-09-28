@@ -117,6 +117,31 @@ fn sync_skips_current_branch_with_tracked_modifications() {
     assert_eq!(origin_main, remote_head);
 }
 
+/// In verbose mode, the "dirty branch" skip note must name which repo it's
+/// about, like the branch-update lines beside it (see
+/// `sync_verbose_shows_attributed_output_for_branch_update`), instead of
+/// printing an unattributed `Skipping merge on <branch> (dirty branch)`
+/// that's ambiguous across a multi-repo run.
+#[test]
+fn sync_verbose_attributes_dirty_branch_skip_note() {
+    let env = TestEnv::new();
+    let fx = env.cloned("dotfiles");
+
+    env.push_commit(&fx.remote, "main", "remote commit");
+
+    // Modify a tracked file (from the seed commit) without committing.
+    fs::write(fx.clone.join("README.md"), "seed\nlocal edit\n").expect("modify tracked file");
+
+    let assert = env.run_with("sync", &fx.repos, &fx.out, &["-v"]).success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("dotfiles: Skipping merge on main (dirty branch)"),
+        "expected the dirty-branch skip note to be attributed to \
+         'dotfiles', got stdout: {stdout:?}"
+    );
+}
+
 /// Untracked files must never block the fast-forward merge: `merge
 /// --ff-only` itself refuses to overwrite an untracked file that's in the
 /// way, so the clean check only needs to consider tracked modifications.
@@ -424,6 +449,36 @@ fn sync_skips_branch_whose_upstream_is_gone() {
     assert_eq!(
         local_main_head, remote_main_head,
         "main must still fast-forward even though feature's upstream is gone"
+    );
+}
+
+/// In verbose mode, the "upstream gone" skip note must name which repo
+/// it's about, like the branch-update lines beside it (see
+/// `sync_verbose_shows_attributed_output_for_branch_update`), instead of
+/// printing an unattributed `Skipping <branch> (upstream gone)` that's
+/// ambiguous across a multi-repo run.
+#[test]
+fn sync_verbose_attributes_gone_upstream_skip_note() {
+    let env = TestEnv::new();
+
+    let remote = env.bare_remote("dotfiles");
+    env.push_commit(&remote, "feature", "feature commit 1");
+
+    let fx = env.clone_remote(&remote);
+    env.git(&fx.clone, &["branch", "feature", "origin/feature"]);
+
+    // Delete `feature` on the remote directly, so the local branch's
+    // upstream becomes "[gone]" once `sync`'s own `fetch --prune` prunes
+    // the now-stale `origin/feature` remote-tracking ref.
+    env.git(&remote, &["branch", "-D", "feature"]);
+
+    let assert = env.run_with("sync", &fx.repos, &fx.out, &["-v"]).success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("dotfiles: Skipping feature (upstream gone)"),
+        "expected the gone-upstream skip note to be attributed to \
+         'dotfiles', got stdout: {stdout:?}"
     );
 }
 

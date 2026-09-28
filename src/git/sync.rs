@@ -181,7 +181,7 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
             // so this isn't a failure or even a one-off warning: just
             // skip it, and only mention it at all in verbose mode.
             if config.verbose {
-                println!("Skipping {local} (upstream gone)");
+                println!("{repo}: Skipping {local} (upstream gone)");
             }
             continue;
         }
@@ -241,7 +241,7 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
                 }
             } else if config.verbose {
                 // Working tree dirty: skip merge to avoid conflicts
-                println!("Skipping merge on {} (dirty branch)", local);
+                println!("{repo}: Skipping merge on {local} (dirty branch)");
             }
         } else {
             // Non-current branch: update directly from upstream without
