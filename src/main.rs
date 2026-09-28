@@ -29,7 +29,7 @@ use config::Config;
 /// errors (e.g. a missing required argument) exit with code 2.
 fn main() -> ExitCode {
     let matches = Command::new("repo-sync")
-        .version("0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Robert Pearce <me@robertwpearce.com>")
         .about("Clone or sync multiple git repositories from a file")
         .subcommand_required(true)

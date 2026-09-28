@@ -245,6 +245,23 @@ fn different_urls_sharing_a_name_still_collide() {
     );
 }
 
+/// `--version` must report the crate's actual Cargo package version, not
+/// a hardcoded string that silently drifts from `Cargo.toml` on release
+/// (see expert evidence B3: the shipped 0.1.2 binary printed `0.1.0`).
+#[test]
+fn version_matches_cargo_package() {
+    let env = TestEnv::new();
+
+    let assert = env.repo_sync().arg("--version").assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        stdout,
+        format!("repo-sync {}\n", env!("CARGO_PKG_VERSION")),
+        "--version must print the Cargo package version, got: {stdout:?}"
+    );
+}
+
 /// A fully successful run without `-v` must produce no stdout output at
 /// all, so `repo-sync` stays cron-friendly by default.
 #[test]
