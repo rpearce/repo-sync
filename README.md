@@ -174,7 +174,7 @@ repo-sync sync -f repos.txt -o ./repos
 
 - Clones any repositories that aren't found locally.
 - Fetches all remotes, pruning deleted remote branches.
-- Fast-forward merges the current branch only, skipped when tracked files are modified.
+- Fast-forwards the current branch (never merges or rebases); skipped when tracked files are modified.
 - Updates any other branches from upstream without checking them out.
 
 ### Clone repositories
