@@ -36,12 +36,58 @@ pub fn normalize(url: &str) -> String {
 /// appears before the first `/`, or a `:` and no `/` at all.
 /// - `url`: repo-list entry, already known not to contain `"://"`
 fn is_scp_like(url: &str) -> bool {
-    match url.find(':') {
-        None => false,
-        Some(colon_idx) => match url.find('/') {
-            None => true,
-            Some(slash_idx) => colon_idx < slash_idx,
+    scp_colon_index(url).is_some()
+}
+
+/// Find the separator colon of an scp-like remote (e.g.
+/// `git@github.com:user/repo.git` or `host:repo.git`): a `:` that appears
+/// before the first `/`, or a `:` with no `/` at all. `None` if `url`
+/// doesn't have that shape.
+/// - `url`: repo-list entry, already known not to contain `"://"`
+fn scp_colon_index(url: &str) -> Option<usize> {
+    let colon_idx = url.find(':')?;
+    match url.find('/') {
+        None => Some(colon_idx),
+        Some(slash_idx) if colon_idx < slash_idx => Some(colon_idx),
+        Some(_) => None,
+    }
+}
+
+/// Derive a repository's local directory name from `url` (its
+/// **normalized** form — see `normalize`).
+///
+/// Finds `url`'s path (skipping the scheme and, for `scheme://host/...`
+/// forms, the host — so the `//` after a scheme is never mistaken for a
+/// path separator), takes that path's last `/`-separated segment, and
+/// strips one trailing `.git` suffix (never a substring match: a
+/// `.git`-free name like `rpearce.github.io` must come through whole).
+/// Rejects `""` (no path at all, e.g. `https://host/`, which
+/// `Path::join` would otherwise resolve to the output directory itself),
+/// `"."` and `".."` (which would resolve to the output directory or its
+/// parent).
+/// - `url`: a normalized repo-list entry (see `normalize`)
+pub fn repo_name(url: &str) -> Option<&str> {
+    let path = match url.find("://") {
+        Some(scheme_end) => {
+            let after_scheme = &url[scheme_end + 3..];
+            match after_scheme.find('/') {
+                Some(host_end) => &after_scheme[host_end..],
+                None => "",
+            }
+        }
+        None => match scp_colon_index(url) {
+            Some(colon_idx) => &url[colon_idx + 1..],
+            None => url,
         },
+    };
+
+    let trimmed = path.trim_end_matches('/');
+    let segment = trimmed.rsplit('/').next().unwrap_or("");
+    let name = segment.strip_suffix(".git").unwrap_or(segment);
+
+    match name {
+        "" | "." | ".." => None,
+        _ => Some(name),
     }
 }
 
@@ -103,5 +149,65 @@ mod tests {
         let input = "/tmp/remotes/repo.git";
         let expected = "/tmp/remotes/repo.git";
         assert_eq!(normalize(input), expected);
+    }
+
+    #[test]
+    fn repo_name_full_github_pages_domain_is_not_mangled() {
+        let input = "https://github.com/rpearce/rpearce.github.io";
+        assert_eq!(repo_name(input), Some("rpearce.github.io"));
+    }
+
+    #[test]
+    fn repo_name_strips_git_suffix() {
+        let input = "https://github.com/u/repo.git";
+        assert_eq!(repo_name(input), Some("repo"));
+    }
+
+    #[test]
+    fn repo_name_ignores_trailing_slash() {
+        let input = "https://github.com/u/repo/";
+        assert_eq!(repo_name(input), Some("repo"));
+    }
+
+    #[test]
+    fn repo_name_ignores_trailing_slash_after_git_suffix() {
+        let input = "https://github.com/u/repo.git/";
+        assert_eq!(repo_name(input), Some("repo"));
+    }
+
+    #[test]
+    fn repo_name_scp_like_with_owner() {
+        let input = "git@github.com:u/repo.git";
+        assert_eq!(repo_name(input), Some("repo"));
+    }
+
+    #[test]
+    fn repo_name_scp_like_without_owner() {
+        let input = "git@host:repo.git";
+        assert_eq!(repo_name(input), Some("repo"));
+    }
+
+    #[test]
+    fn repo_name_file_url() {
+        let input = "file:///tmp/x/repo";
+        assert_eq!(repo_name(input), Some("repo"));
+    }
+
+    #[test]
+    fn repo_name_rejects_parent_dir_segment() {
+        let input = "https://github.com/u/..";
+        assert_eq!(repo_name(input), None);
+    }
+
+    #[test]
+    fn repo_name_rejects_current_dir_segment() {
+        let input = "https://github.com/u/.";
+        assert_eq!(repo_name(input), None);
+    }
+
+    #[test]
+    fn repo_name_rejects_bare_host_with_no_path() {
+        let input = "https://github.com/";
+        assert_eq!(repo_name(input), None);
     }
 }
