@@ -429,10 +429,11 @@ fn sync_skips_branch_whose_upstream_is_gone() {
 
 /// A local tag literally named `origin/main` must never shadow the
 /// remote-tracking branch `origin/main` when `sync` fast-forwards `main`.
-/// Regression test: git's ref-disambiguation rules check `refs/tags/`
-/// before `refs/remotes/`, so the old short-name refspec/merge target
-/// (`origin/main`) resolved to the tag instead, silently turning the
-/// fast-forward into a no-op.
+/// Regression guard: `sync_repo_branches` deliberately uses full refnames
+/// (not `%(refname:short)`/`%(upstream:short)`) for `merge --ff-only` /
+/// `fetch .`, so correctness here doesn't depend on git's own short-name
+/// disambiguation continuing to resolve `origin/main` to the
+/// remote-tracking branch instead of this same-named tag.
 #[test]
 fn sync_fast_forwards_despite_ambiguous_short_ref() {
     let env = TestEnv::new();

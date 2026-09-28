@@ -242,8 +242,8 @@ repo-sync clone -f repos.txt -o ./repos
     case where the summary line is printed, to stderr, regardless of
     `-v`; the other three cases print just their own error line.
 
-  A warning (e.g. a diverged branch, a `[gone]` upstream, a duplicate
-  entry) never causes this.
+  A warning (e.g. a diverged branch, a duplicate entry) or a skipped
+  `[gone]` upstream (noted only with `-v`) never causes this.
 - `2`: a command-line usage error (e.g. a missing required argument, or
   no arguments at all). `--help` and `--version` exit `0`.
 

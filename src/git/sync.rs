@@ -12,10 +12,11 @@ use crate::utils::url::{normalize, repo_name};
 /// merge into a dirty working tree, both of which contradict a tool that
 /// promises a fast-forward-only update. See `sync_repo_branches`.
 /// - `url`: repository URL (partial URLs are prefixed with https://)
-/// - `base_dir`: local directory for repositories
 /// - `config`: command configuration
 pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
-    // Step 1: Normalize the URL to ensure it has a protocol (https://)
+    // Step 1: Normalize the URL (e.g. upgrade http:// to https://, or
+    // prefix a bare host/owner/repo with https://). ssh/scp-style/local-path
+    // entries are left as-is; see `normalize` for the exact rules.
     let url = normalize(url);
 
     // Step 2: Determine the repository name from the URL
@@ -136,11 +137,11 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
 
     // Step 3: List all local branches together with their upstream's full
     // refname and tracking status. Full refnames (not
-    // `%(refname:short)`/`%(upstream:short)`) avoid a short name like
-    // `origin/main` ever being resolved against the wrong ref: git's
-    // rev-parse disambiguation checks `refs/tags/<name>` before
-    // `refs/remotes/<name>`, so a local tag named e.g. `origin/main`
-    // could otherwise shadow the actual upstream in `merge --ff-only` /
+    // `%(refname:short)`/`%(upstream:short)`) are used defensively, so
+    // correctness here doesn't depend on git's own short-name
+    // disambiguation (which decides what a short name like `origin/main`
+    // resolves to when a same-named local tag or other ref could also
+    // match) continuing to pick the actual upstream in `merge --ff-only` /
     // `fetch .` below. `%(upstream:track)` reports `[gone]` when the
     // upstream's remote-tracking ref no longer exists because its branch
     // was deleted on the remote. Fields are NUL (`%00`) separated so a

@@ -10,6 +10,7 @@
 /// - Local paths starting with `/` or `.` are returned unchanged.
 /// - Anything else is treated as a bare `host/owner/repo` entry and
 ///   prefixed with `https://`.
+///
 /// - `url`: repo-list entry to normalize
 pub fn normalize(url: &str) -> String {
     if let Some(rest) = url.strip_prefix("http://") {

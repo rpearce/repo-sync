@@ -13,7 +13,6 @@ use crate::utils::url::{normalize, repo_name};
 
 /// Clone a repository only if it doesn't already exist.
 /// - `url`: repository URL
-/// - `base_dir`: directory where the repo should be cloned
 /// - `config`: command configuration
 pub fn clone_repo(url: &str, config: &Config) -> Result<(), RepoError> {
     let url = normalize(url);

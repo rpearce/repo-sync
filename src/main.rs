@@ -33,9 +33,9 @@ use config::Config;
 ///   repo-sync sync -f repos.txt -o ./repos
 ///
 /// Exits with code 1 if the repo list can't be read, `git` isn't on
-/// `PATH`, or any repository fails to clone or sync. Clap's own usage
-/// errors (e.g. a missing required argument, or no arguments at all) exit
-/// with code 2.
+/// `PATH`, the thread pool for `-j`/`--jobs` fails to build, or any
+/// repository fails to clone or sync. Clap's own usage errors (e.g. a
+/// missing required argument, or no arguments at all) exit with code 2.
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
