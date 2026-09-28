@@ -50,16 +50,48 @@ pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
 /// or letting git's own multi-line, unattributed stderr reach the user
 /// directly. Per the error taxonomy, a branch-level update failure is a
 /// warning: it never changes the process exit code.
+///
+/// Uses the **last** non-empty stderr line, not the first: `fetch .`'s
+/// rejection puts its actually-useful explanation
+/// (`! [rejected] ... (non-fast-forward)`) after an uninformative `From .`
+/// header line, and a diverged `merge --ff-only` puts its
+/// `fatal: Not possible to fast-forward, aborting.` last too (after any
+/// hint lines, though `-c advice.diverging=false` already suppresses
+/// those — see the merge call in `sync_repo_branches`).
 /// - `repo`: identifies which repository this warning is about (the
 ///   repo's directory name, since that's what's on hand in
 ///   `sync_repo_branches`; the normalized URL isn't plumbed down this far)
 /// - `branch`: the local branch that couldn't be updated
 /// - `err`: the failed git command's error, whose message is git's
-///   captured stderr (see `command::git_output`)
+///   captured stderr (see `command::git_output`/`command::git_output_combined`)
 fn warn_branch_update_failed(repo: &str, branch: &str, err: &io::Error) {
     let message = err.to_string();
-    let first_line = message.lines().next().unwrap_or("");
-    eprintln!("warning: {repo}: could not fast-forward {branch}: {first_line}");
+    let last_line = message
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    eprintln!("warning: {repo}: could not fast-forward {branch}: {last_line}");
+}
+
+/// Print each non-blank line of `output` — git's own stdout/stderr from a
+/// *successful* branch-level update (see `command::git_output_combined`)
+/// — prefixed with `<repo>: `, so verbose mode still shows git's own
+/// progress text (e.g. `fetch .`'s `From . ... -> feature`, or
+/// `merge --ff-only`'s `Updating a..b` / `Fast-forward`), now attributed
+/// to a specific repo instead of raw, unattributed inherited stdio (or,
+/// since these commands are captured rather than inherited, silently
+/// dropped entirely).
+/// - `repo`: identifies which repository this output is about (see
+///   `warn_branch_update_failed`)
+/// - `output`: the successful command's combined stdout/stderr
+fn print_branch_update_output(repo: &str, output: &str) {
+    for line in output.lines() {
+        if !line.trim().is_empty() {
+            println!("{repo}: {line}");
+        }
+    }
 }
 
 /// Synchronize all local branches in the repository at `path` with their upstreams.
@@ -152,8 +184,11 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
                 // suppresses ~10 lines of generic hint text about a
                 // diverged branch that this warning already explains.
                 // Non-fatal: a failed fast-forward is a warning, not a
-                // failure (see the error taxonomy).
-                if let Err(e) = command::git_output(
+                // failure (see the error taxonomy). On success, verbose
+                // mode still shows git's own output (e.g. `Updating a..b`
+                // / `Fast-forward`), attributed to this repo, instead of
+                // capturing it only to throw it away.
+                match command::git_output_combined(
                     path,
                     &[
                         "-c",
@@ -163,7 +198,12 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
                         upstream,
                     ],
                 ) {
-                    warn_branch_update_failed(repo, local, &e);
+                    Ok(output) => {
+                        if config.verbose {
+                            print_branch_update_output(repo, &output);
+                        }
+                    }
+                    Err(e) => warn_branch_update_failed(repo, local, &e),
                 }
             } else if config.verbose {
                 // Working tree dirty: skip merge to avoid conflicts
@@ -174,10 +214,18 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
             // checkout. Equivalent to: `git fetch . <upstream>:<local>`.
             // Captured (not inherited), for the same reason as the merge
             // above: a non-fast-forward here (e.g. a diverged branch, or
-            // a `[gone]` upstream) is a warning, not a failure.
+            // a `[gone]` upstream) is a warning, not a failure. `fetch`
+            // writes its progress (`From . ... -> feature`) to stderr
+            // even on success, so verbose mode needs the combined output
+            // to show it, attributed to this repo.
             let refspec = format!("{}:{}", upstream, local);
-            if let Err(e) = command::git_output(path, &["fetch", ".", &refspec]) {
-                warn_branch_update_failed(repo, local, &e);
+            match command::git_output_combined(path, &["fetch", ".", &refspec]) {
+                Ok(output) => {
+                    if config.verbose {
+                        print_branch_update_output(repo, &output);
+                    }
+                }
+                Err(e) => warn_branch_update_failed(repo, local, &e),
             }
         }
     }

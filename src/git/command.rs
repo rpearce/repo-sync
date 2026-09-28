@@ -73,6 +73,31 @@ pub fn git_output(dir: &Path, args: &[&str]) -> io::Result<String> {
     }
 }
 
+/// Like `git_output`, but on success the returned string is stdout and
+/// stderr concatenated (stdout first), instead of stdout alone: some
+/// subcommands write their progress to stderr even on success (`git
+/// fetch`'s `From . ... -> feature` line), while others write to stdout
+/// (`git merge`'s `Updating a..b` / `Fast-forward`), so a caller that
+/// just wants to show the user "whatever git printed" — e.g. attributing
+/// a successful branch-level update to its repo in verbose mode, see
+/// `sync::print_branch_update_output` — needs both. On failure, behaves
+/// exactly like `git_output`: returns `Err` with git's captured stderr.
+/// - `dir`: repository directory to run git in (`-C dir`)
+/// - `args`: arguments passed to git after `-C dir`
+pub fn git_output_combined(dir: &Path, args: &[&str]) -> io::Result<String> {
+    let output = git(dir).args(args).output()?;
+
+    if output.status.success() {
+        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        Ok(combined)
+    } else {
+        Err(io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
 /// Run `git <args>` in `dir` with stdout/stderr inherited (so the user
 /// sees git's own output directly), and check the exit status.
 /// Appends `--quiet` when `verbose` is false and the subcommand
@@ -199,6 +224,44 @@ mod tests {
         let dir = tempdir().expect("create tempdir");
 
         let result = git_output(dir.path(), &["rev-parse", "HEAD"]);
+
+        let err = result.expect_err("rev-parse in a non-repo dir must fail");
+        assert!(
+            err.to_string().contains("not a git repository"),
+            "error message must contain git's stderr, got: {err}"
+        );
+    }
+
+    #[test]
+    fn git_output_combined_returns_stdout_on_success() {
+        let dir = tempdir().expect("create tempdir");
+        let init_status = process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(dir.path())
+            .status()
+            .expect("spawn git init");
+        assert!(init_status.success(), "git init must succeed");
+
+        let result = git_output_combined(dir.path(), &["rev-parse", "--show-toplevel"]);
+
+        let output = result.expect("rev-parse --show-toplevel must succeed in a fresh repo");
+        let leaf_name = dir
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("tempdir has a UTF-8 name");
+        assert!(
+            output.contains(leaf_name),
+            "combined output must include the command's stdout, got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn git_output_combined_error_contains_git_stderr_on_failure() {
+        let dir = tempdir().expect("create tempdir");
+
+        let result = git_output_combined(dir.path(), &["rev-parse", "HEAD"]);
 
         let err = result.expect_err("rev-parse in a non-repo dir must fail");
         assert!(

@@ -280,6 +280,12 @@ fn sync_warns_on_diverged_non_current_branch() {
          and the diverged branch, got: {stderr:?}"
     );
     assert!(
+        stderr.contains("non-fast-forward"),
+        "the warning must end with git's actually-useful last stderr \
+         line ('! [rejected] ... (non-fast-forward)'), not the \
+         uninformative 'From .' header line, got: {stderr:?}"
+    );
+    assert!(
         !stderr.lines().any(|l| l.trim_start().starts_with("hint:")),
         "stderr must not contain git's own raw, unattributed hint: lines, \
          got: {stderr:?}"
@@ -331,6 +337,11 @@ fn sync_warns_on_diverged_current_branch() {
          and the diverged branch, got: {stderr:?}"
     );
     assert!(
+        stderr.contains("Not possible to fast-forward"),
+        "the warning must end with git's actual fatal: text (the last \
+         non-empty stderr line), got: {stderr:?}"
+    );
+    assert!(
         !stderr.lines().any(|l| l.trim_start().starts_with("hint:")),
         "stderr must not contain git's own raw, unattributed hint: lines, \
          got: {stderr:?}"
@@ -340,6 +351,38 @@ fn sync_warns_on_diverged_current_branch() {
         "stderr must not contain a bare, unattributed fatal: line (git's \
          own fatal: text may still appear inside the attributed warning \
          line itself), got: {stderr:?}"
+    );
+}
+
+/// In verbose mode, a successful branch-level update must still show
+/// git's own output, attributed to the repo. Regression test: making
+/// failures attributable (see `sync_warns_on_diverged_non_current_branch`)
+/// meant capturing branch-level commands' stdout/stderr instead of
+/// inheriting them, which silently dropped the `From . ... -> feature` /
+/// `Updating a..b` / `Fast-forward` progress text a successful update
+/// used to print directly to the terminal in verbose mode.
+#[test]
+fn sync_verbose_shows_attributed_output_for_branch_update() {
+    let env = TestEnv::new();
+
+    let remote = env.bare_remote("dotfiles");
+    env.push_commit(&remote, "feature", "feature commit 1");
+    let fx = env.clone_remote(&remote);
+    env.git(&fx.clone, &["branch", "feature", "origin/feature"]);
+    env.push_commit(&remote, "feature", "feature commit 2");
+
+    let assert = env.run_with("sync", &fx.repos, &fx.out, &["-v"]).success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let has_attributed_line = stdout
+        .lines()
+        .chain(stderr.lines())
+        .any(|line| line.starts_with("dotfiles: ") && line.contains("feature"));
+    assert!(
+        has_attributed_line,
+        "verbose mode must show git's own branch-update output, \
+         attributed to the repo, got stdout: {stdout:?}, stderr: {stderr:?}"
     );
 }
 
