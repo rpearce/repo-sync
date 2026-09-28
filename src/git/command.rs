@@ -1,0 +1,209 @@
+use std::path::Path;
+use std::process::{self, Command, Stdio};
+use std::{fmt, io};
+
+/// Repo-locating environment variables git sets and exports to hooks
+/// (e.g. an absolute `GIT_DIR`, which *overrides* `-C` entirely rather
+/// than being merely redundant with it). If one of these leaks in from
+/// the process running `repo-sync` — for example, `repo-sync` itself
+/// invoked from a git hook, or from inside another repository's
+/// working tree — every command built here would otherwise silently
+/// target that repository instead of the one `-C dir` names. Removed
+/// from every command this module builds.
+const INHERITED_GIT_ENV_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// Subcommands that accept a `--quiet` flag anywhere among their own
+/// arguments (verified: git accepts it before or after a positional
+/// argument, e.g. `git merge --ff-only <upstream> --quiet`). `git_run`
+/// only appends `--quiet` for these.
+const QUIET_SUBCOMMANDS: &[&str] = &["clone", "fetch", "merge"];
+
+/// Apply the isolation every git command this module builds needs:
+/// never prompt on a terminal (`GIT_TERMINAL_PROMPT=0`, and a null
+/// stdin so there's nothing to prompt on even if something ignored
+/// that), and ignore repo-locating environment variables inherited
+/// from the calling process (see `INHERITED_GIT_ENV_VARS`).
+fn isolate(cmd: &mut Command) {
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.stdin(Stdio::null());
+    for var in INHERITED_GIT_ENV_VARS {
+        cmd.env_remove(var);
+    }
+}
+
+/// Build an isolated `git -C dir` command (see `isolate`). Every git
+/// invocation that operates on an existing repository should start
+/// here. `git clone` has no existing directory to `-C` into (it
+/// creates `path` itself — `-C` would fail outright if the output
+/// directory doesn't exist yet), so it uses `run_clone` instead.
+/// - `dir`: repository directory to run git in (`-C dir`)
+pub fn git(dir: &Path) -> Command {
+    let mut cmd = process::Command::new("git");
+    cmd.arg("-C").arg(dir);
+    isolate(&mut cmd);
+    cmd
+}
+
+/// Run `git <args>` in `dir`, capturing stdout, and check the exit
+/// status. On failure, returns an `Err` whose message is git's
+/// captured stderr (trimmed), so a caller can both detect the failure
+/// and report git's own explanation of it — a failed command is never
+/// mistaken for one that merely produced empty output (e.g. a failed
+/// `status --porcelain` must never be read as "clean").
+/// - `dir`: repository directory to run git in (`-C dir`)
+/// - `args`: arguments passed to git after `-C dir`
+pub fn git_output(dir: &Path, args: &[&str]) -> io::Result<String> {
+    let output = git(dir).args(args).output()?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Run `git <args>` in `dir` with stdout/stderr inherited (so the user
+/// sees git's own output directly), and check the exit status.
+/// Appends `--quiet` when `verbose` is false and the subcommand
+/// (`args[0]`) is one that accepts it (see `QUIET_SUBCOMMANDS`).
+/// - `dir`: repository directory to run git in (`-C dir`)
+/// - `args`: arguments passed to git after `-C dir`, starting with the subcommand
+/// - `verbose`: when false, and the subcommand accepts it, appends `--quiet`
+pub fn git_run(dir: &Path, args: &[&str], verbose: bool) -> io::Result<()> {
+    let mut cmd = git(dir);
+    cmd.args(args);
+    if !verbose
+        && args
+            .first()
+            .is_some_and(|sub| QUIET_SUBCOMMANDS.contains(sub))
+    {
+        cmd.arg("--quiet");
+    }
+
+    let status = cmd.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "git {args:?} failed in {}",
+            dir.display()
+        )))
+    }
+}
+
+/// Run `git clone <url> <path>`, with the same isolation as `git`
+/// (see `isolate`) but without `-C`: unlike every other command in
+/// this module, clone has no existing directory to change into first
+/// (it creates `path`, including any missing parent directories,
+/// itself). Appends `--quiet` when `verbose` is false, matching
+/// `git_run`'s handling of `clone` in `QUIET_SUBCOMMANDS`.
+/// - `url`: repository URL
+/// - `path`: local repository target directory
+/// - `verbose`: when false, appends `--quiet`
+pub fn run_clone(url: &str, path: &Path, verbose: bool) -> io::Result<()> {
+    let mut cmd = process::Command::new("git");
+    isolate(&mut cmd);
+    cmd.arg("clone").arg(url).arg(path);
+    if !verbose {
+        cmd.arg("--quiet");
+    }
+
+    let status = cmd.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("git clone failed for {:?}", url)))
+    }
+}
+
+/// Build an `io::Error` for a failed git command that includes the
+/// command and git's stderr, so a failure is never mistaken for
+/// success (e.g. a failed `status --porcelain` must never be read as
+/// "clean").
+/// - `command`: human-readable description of the command that failed
+/// - `path`: repository directory the command ran in
+/// - `stderr`: the command's error, whose message is git's captured
+///   stderr (e.g. from `git_output`)
+pub fn command_failed(command: &str, path: &Path, stderr: impl fmt::Display) -> io::Error {
+    io::Error::other(format!("{command} failed in {}: {stderr}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn git_sets_dash_c_dir_first() {
+        let dir = Path::new("/some/repo");
+        let cmd = git(dir);
+
+        let args: Vec<&OsStr> = cmd.get_args().collect();
+        assert_eq!(
+            &args[..2],
+            &[OsStr::new("-C"), OsStr::new("/some/repo")],
+            "git(dir) must start with -C <dir>, got {args:?}"
+        );
+    }
+
+    #[test]
+    fn git_disables_terminal_prompts() {
+        let dir = Path::new("/some/repo");
+        let cmd = git(dir);
+
+        let prompt_disabled = cmd
+            .get_envs()
+            .any(|(k, v)| k == OsStr::new("GIT_TERMINAL_PROMPT") && v == Some(OsStr::new("0")));
+        assert!(
+            prompt_disabled,
+            "git(dir) must set GIT_TERMINAL_PROMPT=0 so git never hangs on a prompt"
+        );
+    }
+
+    #[test]
+    fn git_removes_every_inherited_repo_locating_var() {
+        let dir = Path::new("/some/repo");
+        let cmd = git(dir);
+
+        for var in INHERITED_GIT_ENV_VARS {
+            let explicitly_removed = cmd
+                .get_envs()
+                .any(|(k, v)| k == OsStr::new(var) && v.is_none());
+            assert!(
+                explicitly_removed,
+                "{var} must be explicitly removed (env_remove), got envs: {:?}",
+                cmd.get_envs().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn git_output_error_contains_git_stderr_on_failure() {
+        // An empty directory with no `.git` anywhere above it (a fresh
+        // tempdir) makes `rev-parse` fail predictably and portably,
+        // without needing any repository setup.
+        let dir = tempdir().expect("create tempdir");
+
+        let result = git_output(dir.path(), &["rev-parse", "HEAD"]);
+
+        let err = result.expect_err("rev-parse in a non-repo dir must fail");
+        assert!(
+            err.to_string().contains("not a git repository"),
+            "error message must contain git's stderr, got: {err}"
+        );
+    }
+}
