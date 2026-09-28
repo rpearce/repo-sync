@@ -43,7 +43,7 @@ pub fn run(config: &Config) {
         println!(
             "Syncing {} repositories in {:?}",
             repos.len(),
-            &config.output_dir
+            config.output_dir
         );
     }
 
