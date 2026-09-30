@@ -193,7 +193,7 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
             // Check for tracked modifications using
             // `git status --porcelain --untracked-files=no`. Untracked
             // files are deliberately excluded: counting them as "dirty"
-            // would block fast-forwards that work fine today, and
+            // would block fast-forwards that are safe, and
             // `merge --ff-only` itself refuses to overwrite an untracked
             // file that's actually in the way.
             // Fail closed: if the status check itself fails, we must not

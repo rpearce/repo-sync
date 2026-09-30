@@ -339,10 +339,8 @@ fn sync_with_jobs_flag_succeeds() {
 }
 
 /// Running `repo-sync` with no arguments at all must print help and exit
-/// with clap's usage-error code (2), the same as today's builder-based
-/// CLI: a derive `Cli` with a non-`Option` `#[command(subcommand)]` field
-/// implies `subcommand_required` and `arg_required_else_help`, matching
-/// the builder's explicit `.subcommand_required(true).arg_required_else_help(true)`.
+/// with clap's usage-error code (2): a non-`Option` `#[command(subcommand)]`
+/// field implies `subcommand_required` and `arg_required_else_help`.
 #[test]
 fn no_args_prints_help_and_exits_2() {
     let env = TestEnv::new();

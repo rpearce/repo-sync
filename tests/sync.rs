@@ -145,8 +145,6 @@ fn sync_verbose_attributes_dirty_branch_skip_note() {
 /// Untracked files must never block the fast-forward merge: `merge
 /// --ff-only` itself refuses to overwrite an untracked file that's in the
 /// way, so the clean check only needs to consider tracked modifications.
-/// Regression guard: this already passes today (via `git pull`), and must
-/// keep passing once `pull` is replaced with `merge --ff-only`.
 #[test]
 fn sync_fast_forwards_current_branch_with_only_untracked_files() {
     let env = TestEnv::new();

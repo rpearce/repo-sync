@@ -23,8 +23,8 @@ const INHERITED_GIT_ENV_VARS: &[&str] = &[
 
 /// Subcommands `git_run` appends `--quiet` for (verified: git accepts it
 /// anywhere among a subcommand's own arguments, e.g. `git merge --ff-only
-/// <upstream> --quiet`). Kept to exactly what `git_run` is actually
-/// called with (today, just `fetch --all`): `merge` and `fetch .` are
+/// <upstream> --quiet`). Kept to exactly what `git_run` is called with
+/// (only `fetch --all`): `merge` and `fetch .` are
 /// branch-level calls that go through `git_output`/`git_output_combined`
 /// instead (captured, not inherited, so `--quiet` wouldn't do anything),
 /// and `run_clone` has no `-C` directory to route through `git_run` at
