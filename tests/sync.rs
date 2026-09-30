@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::fs;
 
 use common::TestEnv;
@@ -572,7 +573,17 @@ fn sync_ignores_inherited_git_dir() {
     let hook_head = env.git(&hook_repo, &["rev-parse", "HEAD"]);
     env.push_commit(&hook_remote, "main", "hook remote commit");
 
-    env.repo_sync()
+    // The harness removes any inherited `GIT_DIR`, so the one set below is
+    // the only one `repo-sync` sees
+    let mut repo_sync = env.repo_sync();
+    assert!(
+        repo_sync
+            .get_envs()
+            .any(|(key, value)| key == OsStr::new("GIT_DIR") && value.is_none()),
+        "the test harness must remove an inherited GIT_DIR"
+    );
+
+    repo_sync
         .env("GIT_DIR", hook_repo.join(".git"))
         .arg("sync")
         .arg("-f")
