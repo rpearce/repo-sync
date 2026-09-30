@@ -553,3 +553,37 @@ fn sync_preserves_local_tags() {
         "local-only-tag must survive sync, got tags: {tags:?}"
     );
 }
+
+/// Running `repo-sync` from inside a git hook must sync the listed
+/// repositories, not the hook's own repository: git exports an absolute
+/// `GIT_DIR` to hooks, and it overrides `-C`.
+#[test]
+fn sync_ignores_inherited_git_dir() {
+    let env = TestEnv::new();
+    let fx = env.cloned("dotfiles");
+    let remote_head = env.push_commit(&fx.remote, "main", "remote commit");
+
+    // The repository a hook would run in. Its remote has moved ahead too,
+    // so a leaked `GIT_DIR` would fast-forward it.
+    let hook_remote = env.bare_remote("hook-repo");
+    env.git(
+        env.root(),
+        &["clone", &env.file_url(&hook_remote), "hook-repo"],
+    );
+    let hook_repo = env.root().join("hook-repo");
+    let hook_head = env.git(&hook_repo, &["rev-parse", "HEAD"]);
+    env.push_commit(&hook_remote, "main", "hook remote commit");
+
+    env.repo_sync()
+        .env("GIT_DIR", hook_repo.join(".git"))
+        .arg("sync")
+        .arg("-f")
+        .arg(&fx.repos)
+        .arg("-o")
+        .arg(&fx.out)
+        .assert()
+        .success();
+
+    assert_eq!(env.git(&hook_repo, &["rev-parse", "HEAD"]), hook_head);
+    assert_eq!(env.git(&fx.clone, &["rev-parse", "HEAD"]), remote_head);
+}

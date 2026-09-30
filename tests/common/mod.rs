@@ -21,7 +21,7 @@ use tempfile::TempDir;
 /// hooks and which override `-C`), injected config (`GIT_CONFIG_*`), or the
 /// global ignore and attributes files (`XDG_CONFIG_HOME`). `isolate`
 /// removes them from every command it builds.
-pub const INHERITED_GIT_ENV_VARS: &[&str] = &[
+const INHERITED_GIT_ENV_VARS: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
