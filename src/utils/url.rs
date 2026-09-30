@@ -20,7 +20,7 @@ pub fn normalize(url: &str) -> String {
 
     // If git can already use it as-is (a URL with a scheme, an scp-style
     // remote or a local path), leave it
-    if url.contains("://") || is_scp_like(url) || url.starts_with(['/', '.']) {
+    if url.contains("://") || is_scp_like(url) || url.starts_with('/') || url.starts_with('.') {
         url.to_string()
     } else {
         // Otherwise, prepend "https://"
