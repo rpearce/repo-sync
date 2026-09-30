@@ -62,7 +62,7 @@ pub fn run(config: &Config) {
         println!(
             "Cloning {} repositories into {:?}",
             repos.len(),
-            &config.output_dir
+            config.output_dir
         );
     }
 
