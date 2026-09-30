@@ -16,14 +16,11 @@ use assert_cmd::assert::Assert;
 use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 
-/// Git environment variables that carry repository state and might be
-/// inherited from the process running the tests — for example, git
-/// exports an absolute `GIT_DIR` and `GIT_INDEX_FILE` to hooks, and in a
-/// linked worktree `GIT_DIR` overrides `-C` entirely. Left set, they can
-/// make an isolated command silently operate on (and mutate) a real
-/// repository instead of the sandbox. Removed (not just overridden) from
-/// every command `isolate` touches. `pub` so `tests/harness.rs` can
-/// assert against this exact list instead of keeping its own copy.
+/// Inherited environment variables that would point git at state outside
+/// the sandbox: a repository (`GIT_DIR` and friends, which git exports to
+/// hooks and which override `-C`), injected config (`GIT_CONFIG_*`), or the
+/// global ignore and attributes files (`XDG_CONFIG_HOME`). `isolate`
+/// removes them from every command it builds.
 pub const INHERITED_GIT_ENV_VARS: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -38,10 +35,8 @@ pub const INHERITED_GIT_ENV_VARS: &[&str] = &[
     "XDG_CONFIG_HOME",
 ];
 
-/// A repository cloned by `repo-sync clone` for a `sync` test, bundling
-/// the pieces most such tests need so they don't each repeat the
-/// bare-remote-plus-clone boilerplate. Built by `TestEnv::cloned` or
-/// `TestEnv::clone_remote`.
+/// A repository cloned by `repo-sync clone`, plus what a test needs to sync
+/// it again. Built by `TestEnv::cloned` or `TestEnv::clone_remote`.
 pub struct Fixture {
     /// The bare remote the clone came from (e.g. for `push_commit`).
     pub remote: PathBuf,
@@ -87,11 +82,7 @@ impl TestEnv {
     /// - `dir`: directory to run git in (`-C dir`)
     /// - `args`: arguments passed to git after `-C dir`
     pub fn git(&self, dir: &Path, args: &[&str]) -> String {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(dir).args(args);
-        self.isolate(&mut cmd);
-
-        let output = cmd.output().expect("spawn git");
+        let output = self.git_command(dir, args).output().expect("spawn git");
         assert!(
             output.status.success(),
             "git {:?} in {:?} failed:\nstdout: {}\nstderr: {}",
@@ -104,29 +95,20 @@ impl TestEnv {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
-    /// Write `key = value` into the sandbox's isolated global git config,
-    /// via `git config --global` (rather than a test poking the config
-    /// file directly), so it stays consistent with whatever else git
-    /// writes there.
+    /// Set `key` to `value` in the sandbox's global git config.
     /// - `key`: config key, e.g. `"pull.rebase"`
     /// - `value`: config value, e.g. `"true"`
     pub fn set_global_config(&self, key: &str, value: &str) {
         self.git(self.root(), &["config", "--global", key, value]);
     }
 
-    /// Create a bare repository named `name` under the sandbox, seed it
-    /// with an initial commit on `main` (pushed from a throwaway working
-    /// clone), and return the bare repo's path. Build a `file://` URL
-    /// from this path to reach it from `repo-sync` or from `git`.
+    /// Create a bare repository named `name` under the sandbox with one
+    /// commit on `main`, and return its path. The seed commit adds
+    /// `README.md`, which is deliberately not the file `push_commit` edits,
+    /// so a test can dirty one while the remote changes the other.
     /// - `name`: directory name for the bare repo
     pub fn bare_remote(&self, name: &str) -> PathBuf {
-        let bare_path = self.root().join("remotes").join(name);
-        fs::create_dir_all(bare_path.parent().expect("remotes dir has a parent"))
-            .expect("create remotes directory");
-        self.git(
-            self.root(),
-            &["init", "--bare", "-b", "main", path_str(&bare_path)],
-        );
+        let bare_path = self.empty_bare_remote(name);
 
         let seed = tempfile::tempdir_in(self.root()).expect("create seed working dir");
         self.git(self.root(), &["init", "-b", "main", path_str(seed.path())]);
@@ -142,13 +124,9 @@ impl TestEnv {
         bare_path
     }
 
-    /// Create an empty bare repository named `name` under the sandbox: no
-    /// seed commit, unlike `bare_remote`. Its `HEAD` still points at a
-    /// branch (`main`) via a symbolic ref, but that branch doesn't exist
-    /// as an actual ref yet ("unborn"), since nothing has ever been
-    /// committed. A clone of this remote inherits the same unborn `HEAD`,
-    /// which `git rev-parse --abbrev-ref HEAD` fails on (while
-    /// `git symbolic-ref -q HEAD` succeeds).
+    /// Create an empty bare repository named `name` under the sandbox, and
+    /// return its path. It has no commits, so its `main` branch (and that
+    /// of any clone) is unborn.
     /// - `name`: directory name for the bare repo
     pub fn empty_bare_remote(&self, name: &str) -> PathBuf {
         let bare_path = self.root().join("remotes").join(name);
@@ -204,9 +182,7 @@ impl TestEnv {
     }
 
     /// Write a repo-list file named `name` (e.g. `"repos.txt"`) with one
-    /// entry per line, and return its path. Takes a name, rather than
-    /// always writing to the same file, so a single test can build more
-    /// than one repo-list without one overwriting another.
+    /// entry per line, and return its path.
     /// - `name`: file name to create under the sandbox root
     /// - `entries`: repo-list lines, e.g. `file://` URLs from `file_url`
     pub fn repos_file(&self, name: &str, entries: &[&str]) -> PathBuf {
@@ -215,16 +191,11 @@ impl TestEnv {
         path
     }
 
-    /// The `repo-sync` binary under test, with the isolated environment
-    /// applied so its git children never touch real git config or state,
-    /// and a default 60-second timeout so a hang fails the test instead
-    /// of stalling CI. Callers add the subcommand and its arguments, e.g.
-    /// `env.repo_sync().arg("sync").arg("-f").arg(&repos).arg("-o").arg(&out)`.
+    /// The `repo-sync` binary under test, isolated like every `git` call,
+    /// with a 60-second timeout so a hang fails the test instead of stalling
+    /// CI. Callers add the subcommand and its arguments.
     pub fn repo_sync(&self) -> RepoSyncCommand {
-        // Build as a plain `std::process::Command` first so it goes
-        // through the same `isolate` as every `git` call, then hand it
-        // to `assert_cmd` (which has no way to mutate an existing
-        // `assert_cmd::Command`'s inner `std::process::Command`).
+        // `isolate` takes a `std::process::Command`, so build one and wrap it
         let mut std_cmd = Command::cargo_bin("repo-sync").expect("find repo-sync binary");
         self.isolate(&mut std_cmd);
 
@@ -233,10 +204,8 @@ impl TestEnv {
         cmd
     }
 
-    /// Run `repo-sync <sub> -f <repos> -o <out>` through the isolated
-    /// environment and return the resulting `Assert`, for the caller to
-    /// finish (e.g. `.success()`). Shared by every test that drives
-    /// `clone` or `sync` so the argument wiring lives in one place.
+    /// Run `repo-sync <sub> -f <repos> -o <out>` and return the resulting
+    /// `Assert`, for the caller to finish (e.g. `.success()`).
     /// - `sub`: subcommand, e.g. `"clone"` or `"sync"`
     /// - `repos`: repo-list file, e.g. from `repos_file` or a `Fixture`
     /// - `out`: output directory, e.g. from a `Fixture`
@@ -261,29 +230,19 @@ impl TestEnv {
             .assert()
     }
 
-    /// Clone an existing bare `remote` (e.g. from `bare_remote`) with
-    /// `repo-sync clone`, asserted to succeed, into the sandbox's shared
-    /// `out` directory, and bundle the result into a `Fixture`. Kept
-    /// separate from `cloned` so a test can seed remote branches (e.g.
-    /// via `push_commit`) before the clone happens.
-    ///
-    /// The clone's directory name is derived from `remote`'s own file
-    /// name (stripping a trailing `.git`), matching how `repo-sync` itself
-    /// names the clone from the URL's last path segment. There is no
-    /// separate `name` parameter: one that disagreed with `remote`'s
-    /// actual file name would make `Fixture.clone` point at a directory
-    /// `repo-sync` never created.
-    /// - `remote`: path to a bare repo, e.g. one from `bare_remote`
+    /// Clone `remote` with `repo-sync clone` (asserted to succeed) into the
+    /// sandbox's `out` directory, and return the resulting `Fixture`.
+    /// Separate from `cloned` so a test can change the remote (e.g. with
+    /// `push_commit`) before cloning.
+    /// - `remote`: path to a bare repo whose file name has no `.git` suffix,
+    ///   so it's also the clone's directory name, e.g. one from `bare_remote`
     pub fn clone_remote(&self, remote: &Path) -> Fixture {
         let out = self.root().join("out");
         let remote_url = self.file_url(remote);
-        let remote_file_name = remote
+        let name = remote
             .file_name()
             .and_then(|n| n.to_str())
             .expect("remote path has a UTF-8 file name");
-        let name = remote_file_name
-            .strip_suffix(".git")
-            .unwrap_or(remote_file_name);
         let repos = self.repos_file(&format!("{name}.repos.txt"), &[&remote_url]);
 
         self.run("clone", &repos, &out).success();
@@ -305,55 +264,39 @@ impl TestEnv {
         self.clone_remote(&remote)
     }
 
-    /// Apply the isolated environment to a `std::process::Command`: unset
-    /// any inherited git repository state (`INHERITED_GIT_ENV_VARS`),
-    /// then set the sandbox's own `HOME`, git config and identity. Used
-    /// by both `git`/`try_git` and, via `Command::cargo_bin`, by
-    /// `repo_sync`, so there is exactly one place that does this.
+    /// Apply the sandbox to `cmd`: remove inherited git state
+    /// (`INHERITED_GIT_ENV_VARS`), then point `HOME`, git's config and the
+    /// commit identity at the sandbox.
     fn isolate(&self, cmd: &mut Command) {
         for key in INHERITED_GIT_ENV_VARS {
             cmd.env_remove(key);
         }
-        for (key, value) in self.env_pairs() {
-            cmd.env(key, value);
-        }
+        cmd.env("HOME", self.root())
+            .env("GIT_CONFIG_GLOBAL", self.root().join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "repo-sync-tests")
+            .env("GIT_AUTHOR_EMAIL", "repo-sync-tests@example.invalid")
+            .env("GIT_COMMITTER_NAME", "repo-sync-tests")
+            .env("GIT_COMMITTER_EMAIL", "repo-sync-tests@example.invalid")
+            .env("GIT_TERMINAL_PROMPT", "0");
     }
 
-    /// Run `git <args>` in `dir` under the isolated environment, without
-    /// failing the test, and report whether it succeeded. Used for probes
-    /// where failure is an expected outcome, not a bug (e.g. checking
-    /// whether a remote branch exists yet). Output is captured (not
-    /// inherited), so an expected failure doesn't spam test output.
+    /// Like `git`, but for probes where failure is expected: report whether
+    /// it succeeded instead of failing the test.
     fn try_git(&self, dir: &Path, args: &[&str]) -> bool {
+        self.git_command(dir, args)
+            .output()
+            .expect("spawn git")
+            .status
+            .success()
+    }
+
+    /// Build `git -C <dir> <args>` with the sandbox applied.
+    fn git_command(&self, dir: &Path, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(dir).args(args);
         self.isolate(&mut cmd);
-        cmd.output().expect("spawn git").status.success()
-    }
-
-    /// The environment variables that isolate git (and anything that
-    /// shells out to it, like the `repo-sync` binary) from the
-    /// developer's real git config, identity and HOME.
-    fn env_pairs(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("HOME", path_str(self.root()).to_string()),
-            (
-                "GIT_CONFIG_GLOBAL",
-                path_str(&self.root().join("gitconfig")).to_string(),
-            ),
-            ("GIT_CONFIG_NOSYSTEM", "1".to_string()),
-            ("GIT_AUTHOR_NAME", "repo-sync-tests".to_string()),
-            (
-                "GIT_AUTHOR_EMAIL",
-                "repo-sync-tests@example.invalid".to_string(),
-            ),
-            ("GIT_COMMITTER_NAME", "repo-sync-tests".to_string()),
-            (
-                "GIT_COMMITTER_EMAIL",
-                "repo-sync-tests@example.invalid".to_string(),
-            ),
-            ("GIT_TERMINAL_PROMPT", "0".to_string()),
-        ]
+        cmd
     }
 }
 
