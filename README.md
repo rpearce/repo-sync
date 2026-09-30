@@ -116,37 +116,79 @@ main
 
 ## Installation
 
+### Requirements
+
+`git` must be on your PATH.
+
 ### From GitHub Releases (Recommended)
 
-Download the latest binary for your platform from the [releases page](https://github.com/rpearce/repo-sync/releases):
+Pick the asset for your platform:
 
-**Linux x86_64:**
+| Platform                    | Asset                                |
+|------------------------------|---------------------------------------|
+| Linux x86_64                 | `repo-sync-linux-x86_64.tar.gz`       |
+| Linux x86_64 (musl/static)   | `repo-sync-linux-musl-x86_64.tar.gz`  |
+| macOS (Intel)                | `repo-sync-macos-x86_64.tar.gz`       |
+| macOS (Apple Silicon)        | `repo-sync-macos-aarch64.tar.gz`      |
+
+Set `ASSET` below to that filename, then paste the whole block into your
+shell (works in both bash and zsh). It runs in a subshell so it can't alter
+or kill your interactive shell, downloads only over HTTPS, and verifies the
+release's SHA-256 checksum — including that the checksum file actually
+names the tarball just downloaded, not some other file — before extracting
+anything:
+
 ```bash
-mkdir -p ~/.local/bin
-curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-linux-x86_64.tar.gz | tar -xzf -
-mv repo-sync ~/.local/bin/
+(
+  set -euo pipefail
+  ASSET=repo-sync-macos-aarch64.tar.gz
+  BASE="https://github.com/rpearce/repo-sync/releases/latest/download"
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; cd "$tmp"
+  curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET"
+  curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET.sha256"
+  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256" || { echo "error: $ASSET.sha256 does not list $ASSET" >&2; exit 1; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c "$ASSET.sha256"
+  else
+    shasum -a 256 -c "$ASSET.sha256"
+  fi
+  tar -xzf "$ASSET"
+  mkdir -p ~/.local/bin
+  install -m 0755 repo-sync ~/.local/bin/repo-sync
+)
 ```
 
-**Linux x86_64 (musl/static):**
+**Recommended, if you have the [GitHub CLI](https://cli.github.com/)
+installed and logged in (`gh auth login`):** use this variant instead of
+the one above. It additionally verifies the release's build provenance
+attestation before extracting, which is a stronger guarantee than the
+checksum: the checksum only proves the download matches what this release
+published, while the attestation proves this repository's GitHub Actions
+workflow actually built it.
+
 ```bash
-mkdir -p ~/.local/bin
-curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-linux-musl-x86_64.tar.gz | tar -xzf -
-mv repo-sync ~/.local/bin/
+(
+  set -euo pipefail
+  ASSET=repo-sync-macos-aarch64.tar.gz
+  BASE="https://github.com/rpearce/repo-sync/releases/latest/download"
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; cd "$tmp"
+  curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET"
+  curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$ASSET.sha256"
+  grep -qx "[0-9a-f]\{64\}  $ASSET" "$ASSET.sha256" || { echo "error: $ASSET.sha256 does not list $ASSET" >&2; exit 1; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c "$ASSET.sha256"
+  else
+    shasum -a 256 -c "$ASSET.sha256"
+  fi
+  gh attestation verify "$ASSET" --repo rpearce/repo-sync --signer-workflow rpearce/repo-sync/.github/workflows/release.yml
+  tar -xzf "$ASSET"
+  mkdir -p ~/.local/bin
+  install -m 0755 repo-sync ~/.local/bin/repo-sync
+)
 ```
 
-**macOS (Intel):**
-```bash
-mkdir -p ~/.local/bin
-curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-macos-x86_64.tar.gz | tar -xzf -
-mv repo-sync ~/.local/bin/
-```
-
-**macOS (Apple Silicon):**
-```bash
-mkdir -p ~/.local/bin
-curl -L https://github.com/rpearce/repo-sync/releases/latest/download/repo-sync-macos-aarch64.tar.gz | tar -xzf -
-mv repo-sync ~/.local/bin/
-```
+**Note:** `.sha256` checksums and build provenance attestations are
+published for releases after 0.1.2; 0.1.2 and earlier don't have them.
 
 **Note:** Make sure `~/.local/bin` is in your PATH. Add this to your shell config (`~/.bashrc`, `~/.zshrc`, etc.):
 ```bash
@@ -158,7 +200,13 @@ export PATH="$HOME/.local/bin:$PATH"
 Using Cargo:
 
 ```bash
-cargo install --path .
+cargo install --locked --path .
+```
+
+Or directly from GitHub, without cloning:
+
+```bash
+cargo install --locked --git https://github.com/rpearce/repo-sync
 ```
 
 ## Usage
@@ -205,8 +253,11 @@ Repo lines can be prefixed with `https://` and/or end with `.git`, if preferred.
 
 To create a new release:
 
-1. Run `./release <version>` (e.g., `./release 1.0.0`)
-2. Create and merge a pull request with the version bump
-3. After PR is merged: `git switch main && git pull && git push origin <version>`
+1. On a non-`main` branch, run `./release <version>` (e.g., `./release 1.0.0`). This bumps the version in `Cargo.toml`/`Cargo.lock`, runs the test suite, and commits the change; it does not tag or push anything.
+2. Open a pull request for that branch and merge it into `main`.
+3. Tag the merge commit on `main` and push the tag (or `git tag -a` if you don't sign tags):
+   ```bash
+   git switch main && git pull --ff-only && git tag -s <version> -m "Release <version>" && git push origin <version>
+   ```
 
-GitHub Actions will automatically build and publish binaries for Linux and macOS with auto-generated release notes.
+Pushing the tag triggers GitHub Actions, which refuses to build unless the tag matches the version in `Cargo.toml` and the tagged commit is on `main`. It then builds and publishes binaries for Linux and macOS, each with a `.sha256` checksum and a signed build provenance attestation, with auto-generated release notes.
