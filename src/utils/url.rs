@@ -10,25 +10,22 @@
 /// - Local paths starting with `/` or `.` are returned unchanged.
 /// - Anything else is treated as a bare `host/owner/repo` entry and
 ///   prefixed with `https://`.
+///
 /// - `url`: repo-list entry to normalize
 pub fn normalize(url: &str) -> String {
+    // Upgrade a leading "http://" to "https://"
     if let Some(rest) = url.strip_prefix("http://") {
         return format!("https://{}", rest);
     }
 
-    if url.contains("://") {
-        return url.to_string();
+    // If git can already use it as-is (a URL with a scheme, an scp-style
+    // remote or a local path), leave it
+    if url.contains("://") || is_scp_like(url) || url.starts_with('/') || url.starts_with('.') {
+        url.to_string()
+    } else {
+        // Otherwise, prepend "https://"
+        format!("https://{}", url)
     }
-
-    if is_scp_like(url) {
-        return url.to_string();
-    }
-
-    if url.starts_with('/') || url.starts_with('.') {
-        return url.to_string();
-    }
-
-    format!("https://{}", url)
 }
 
 /// Detect scp-like remotes such as `git@github.com:user/repo.git` or
@@ -99,6 +96,13 @@ mod tests {
     fn normalize_with_http_prefix() {
         let input = "http://github.com/user/repo.git";
         let expected = "https://github.com/user/repo.git";
+        assert_eq!(normalize(input), expected);
+    }
+
+    #[test]
+    fn normalize_with_http_prefix_and_port() {
+        let input = "http://example.com:8080/user/repo.git";
+        let expected = "https://example.com:8080/user/repo.git";
         assert_eq!(normalize(input), expected);
     }
 

@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::fs;
 
 use common::TestEnv;
@@ -117,11 +118,34 @@ fn sync_skips_current_branch_with_tracked_modifications() {
     assert_eq!(origin_main, remote_head);
 }
 
+/// In verbose mode, the "dirty branch" skip note must name which repo it's
+/// about, like the branch-update lines beside it (see
+/// `sync_verbose_shows_attributed_output_for_branch_update`), instead of
+/// printing an unattributed `Skipping merge on <branch> (dirty branch)`
+/// that's ambiguous across a multi-repo run.
+#[test]
+fn sync_verbose_attributes_dirty_branch_skip_note() {
+    let env = TestEnv::new();
+    let fx = env.cloned("dotfiles");
+
+    env.push_commit(&fx.remote, "main", "remote commit");
+
+    // Modify a tracked file (from the seed commit) without committing.
+    fs::write(fx.clone.join("README.md"), "seed\nlocal edit\n").expect("modify tracked file");
+
+    let assert = env.run_with("sync", &fx.repos, &fx.out, &["-v"]).success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("dotfiles: Skipping merge on main (dirty branch)"),
+        "expected the dirty-branch skip note to be attributed to \
+         'dotfiles', got stdout: {stdout:?}"
+    );
+}
+
 /// Untracked files must never block the fast-forward merge: `merge
 /// --ff-only` itself refuses to overwrite an untracked file that's in the
 /// way, so the clean check only needs to consider tracked modifications.
-/// Regression guard: this already passes today (via `git pull`), and must
-/// keep passing once `pull` is replaced with `merge --ff-only`.
 #[test]
 fn sync_fast_forwards_current_branch_with_only_untracked_files() {
     let env = TestEnv::new();
@@ -427,12 +451,43 @@ fn sync_skips_branch_whose_upstream_is_gone() {
     );
 }
 
+/// In verbose mode, the "upstream gone" skip note must name which repo
+/// it's about, like the branch-update lines beside it (see
+/// `sync_verbose_shows_attributed_output_for_branch_update`), instead of
+/// printing an unattributed `Skipping <branch> (upstream gone)` that's
+/// ambiguous across a multi-repo run.
+#[test]
+fn sync_verbose_attributes_gone_upstream_skip_note() {
+    let env = TestEnv::new();
+
+    let remote = env.bare_remote("dotfiles");
+    env.push_commit(&remote, "feature", "feature commit 1");
+
+    let fx = env.clone_remote(&remote);
+    env.git(&fx.clone, &["branch", "feature", "origin/feature"]);
+
+    // Delete `feature` on the remote directly, so the local branch's
+    // upstream becomes "[gone]" once `sync`'s own `fetch --prune` prunes
+    // the now-stale `origin/feature` remote-tracking ref.
+    env.git(&remote, &["branch", "-D", "feature"]);
+
+    let assert = env.run_with("sync", &fx.repos, &fx.out, &["-v"]).success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("dotfiles: Skipping feature (upstream gone)"),
+        "expected the gone-upstream skip note to be attributed to \
+         'dotfiles', got stdout: {stdout:?}"
+    );
+}
+
 /// A local tag literally named `origin/main` must never shadow the
 /// remote-tracking branch `origin/main` when `sync` fast-forwards `main`.
-/// Regression test: git's ref-disambiguation rules check `refs/tags/`
-/// before `refs/remotes/`, so the old short-name refspec/merge target
-/// (`origin/main`) resolved to the tag instead, silently turning the
-/// fast-forward into a no-op.
+/// Regression guard: `sync_repo_branches` deliberately uses full refnames
+/// (not `%(refname:short)`/`%(upstream:short)`) for `merge --ff-only` /
+/// `fetch .`, so correctness here doesn't depend on git's own short-name
+/// disambiguation continuing to resolve `origin/main` to the
+/// remote-tracking branch instead of this same-named tag.
 #[test]
 fn sync_fast_forwards_despite_ambiguous_short_ref() {
     let env = TestEnv::new();
@@ -496,4 +551,48 @@ fn sync_preserves_local_tags() {
         tags.lines().any(|t| t == "local-only-tag"),
         "local-only-tag must survive sync, got tags: {tags:?}"
     );
+}
+
+/// Running `repo-sync` from inside a git hook must sync the listed
+/// repositories, not the hook's own repository: git exports an absolute
+/// `GIT_DIR` to hooks, and it overrides `-C`.
+#[test]
+fn sync_ignores_inherited_git_dir() {
+    let env = TestEnv::new();
+    let fx = env.cloned("dotfiles");
+    let remote_head = env.push_commit(&fx.remote, "main", "remote commit");
+
+    // The repository a hook would run in. Its remote has moved ahead too,
+    // so a leaked `GIT_DIR` would fast-forward it.
+    let hook_remote = env.bare_remote("hook-repo");
+    env.git(
+        env.root(),
+        &["clone", &env.file_url(&hook_remote), "hook-repo"],
+    );
+    let hook_repo = env.root().join("hook-repo");
+    let hook_head = env.git(&hook_repo, &["rev-parse", "HEAD"]);
+    env.push_commit(&hook_remote, "main", "hook remote commit");
+
+    // The harness removes any inherited `GIT_DIR`, so the one set below is
+    // the only one `repo-sync` sees
+    let mut repo_sync = env.repo_sync();
+    assert!(
+        repo_sync
+            .get_envs()
+            .any(|(key, value)| key == OsStr::new("GIT_DIR") && value.is_none()),
+        "the test harness must remove an inherited GIT_DIR"
+    );
+
+    repo_sync
+        .env("GIT_DIR", hook_repo.join(".git"))
+        .arg("sync")
+        .arg("-f")
+        .arg(&fx.repos)
+        .arg("-o")
+        .arg(&fx.out)
+        .assert()
+        .success();
+
+    assert_eq!(env.git(&hook_repo, &["rev-parse", "HEAD"]), hook_head);
+    assert_eq!(env.git(&fx.clone, &["rev-parse", "HEAD"]), remote_head);
 }

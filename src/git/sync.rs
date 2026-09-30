@@ -12,10 +12,11 @@ use crate::utils::url::{normalize, repo_name};
 /// merge into a dirty working tree, both of which contradict a tool that
 /// promises a fast-forward-only update. See `sync_repo_branches`.
 /// - `url`: repository URL (partial URLs are prefixed with https://)
-/// - `base_dir`: local directory for repositories
 /// - `config`: command configuration
 pub fn sync_repo(url: &str, config: &Config) -> Result<(), RepoError> {
-    // Step 1: Normalize the URL to ensure it has a protocol (https://)
+    // Step 1: Normalize the URL (e.g. upgrade http:// to https://, or
+    // prefix a bare host/owner/repo with https://). ssh/scp-style/local-path
+    // entries are left as-is; see `normalize` for the exact rules.
     let url = normalize(url);
 
     // Step 2: Determine the repository name from the URL
@@ -136,11 +137,11 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
 
     // Step 3: List all local branches together with their upstream's full
     // refname and tracking status. Full refnames (not
-    // `%(refname:short)`/`%(upstream:short)`) avoid a short name like
-    // `origin/main` ever being resolved against the wrong ref: git's
-    // rev-parse disambiguation checks `refs/tags/<name>` before
-    // `refs/remotes/<name>`, so a local tag named e.g. `origin/main`
-    // could otherwise shadow the actual upstream in `merge --ff-only` /
+    // `%(refname:short)`/`%(upstream:short)`) are used defensively, so
+    // correctness here doesn't depend on git's own short-name
+    // disambiguation (which decides what a short name like `origin/main`
+    // resolves to when a same-named local tag or other ref could also
+    // match) continuing to pick the actual upstream in `merge --ff-only` /
     // `fetch .` below. `%(upstream:track)` reports `[gone]` when the
     // upstream's remote-tracking ref no longer exists because its branch
     // was deleted on the remote. Fields are NUL (`%00`) separated so a
@@ -180,7 +181,7 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
             // so this isn't a failure or even a one-off warning: just
             // skip it, and only mention it at all in verbose mode.
             if config.verbose {
-                println!("Skipping {local} (upstream gone)");
+                println!("{repo}: Skipping {local} (upstream gone)");
             }
             continue;
         }
@@ -192,7 +193,7 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
             // Check for tracked modifications using
             // `git status --porcelain --untracked-files=no`. Untracked
             // files are deliberately excluded: counting them as "dirty"
-            // would block fast-forwards that work fine today, and
+            // would block fast-forwards that are safe, and
             // `merge --ff-only` itself refuses to overwrite an untracked
             // file that's actually in the way.
             // Fail closed: if the status check itself fails, we must not
@@ -240,7 +241,7 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
                 }
             } else if config.verbose {
                 // Working tree dirty: skip merge to avoid conflicts
-                println!("Skipping merge on {} (dirty branch)", local);
+                println!("{repo}: Skipping merge on {local} (dirty branch)");
             }
         } else {
             // Non-current branch: update directly from upstream without

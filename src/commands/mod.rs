@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::{fs, process::ExitCode};
 
 use crate::config::Config;
@@ -195,6 +196,43 @@ pub(crate) fn report(verb: &str, results: &[Result<(), RepoError>], verbose: boo
     }
 
     ExitCode::SUCCESS
+}
+
+/// Run `f` — a parallel workload, typically a
+/// `to_run.par_iter().map(...).collect()` over one command's surviving
+/// repo-list entries — bounded to `jobs` threads when set (`-j`/
+/// `--jobs`), or under rayon's own default global pool otherwise (which
+/// already honors `RAYON_NUM_THREADS` and otherwise defaults to the
+/// number of CPUs). Shared by `clone::run` and `sync::run` so this "which
+/// pool does the parallel phase run in" decision lives in exactly one
+/// place.
+///
+/// When `jobs` is `Some`, builds a **local** pool with
+/// `rayon::ThreadPoolBuilder::build` and runs `f` inside it via
+/// `ThreadPool::install`, deliberately never `build_global`: the global
+/// pool can only be initialized once per process and errors on a second
+/// attempt, which would break any caller that runs more than one
+/// `clone`/`sync` in the same process (e.g. tests). A failure to build
+/// the local pool is reported to stderr and treated as a run failure,
+/// exactly like any other `ExitCode::FAILURE`.
+/// - `jobs`: `-j`/`--jobs` value; `None` means "use rayon's default"
+/// - `f`: the parallel workload to run
+pub(crate) fn run_in_pool<F, R>(jobs: Option<NonZeroUsize>, f: F) -> Result<R, ExitCode>
+where
+    F: FnOnce() -> R + Send,
+    R: Send,
+{
+    let Some(n) = jobs else {
+        return Ok(f());
+    };
+
+    match rayon::ThreadPoolBuilder::new().num_threads(n.get()).build() {
+        Ok(pool) => Ok(pool.install(f)),
+        Err(e) => {
+            eprintln!("error: could not build a thread pool with {n} jobs: {e}");
+            Err(ExitCode::FAILURE)
+        }
+    }
 }
 
 #[cfg(test)]

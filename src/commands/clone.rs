@@ -2,7 +2,9 @@ use std::{path::Path, process::ExitCode};
 
 use rayon::prelude::*;
 
-use crate::commands::{partition_collisions, read_repo_list, report, unique_entry_count};
+use crate::commands::{
+    partition_collisions, read_repo_list, report, run_in_pool, unique_entry_count,
+};
 use crate::config::Config;
 use crate::error::RepoError;
 use crate::git::clone::git_clone;
@@ -11,7 +13,6 @@ use crate::utils::url::{normalize, repo_name};
 
 /// Clone a repository only if it doesn't already exist.
 /// - `url`: repository URL
-/// - `base_dir`: directory where the repo should be cloned
 /// - `config`: command configuration
 pub fn clone_repo(url: &str, config: &Config) -> Result<(), RepoError> {
     let url = normalize(url);
@@ -49,10 +50,15 @@ pub fn run(config: &Config) -> ExitCode {
         );
     }
 
-    let mut results: Vec<Result<(), RepoError>> = to_run
-        .par_iter()
-        .map(|url| clone_repo(url, config))
-        .collect();
+    let mut results: Vec<Result<(), RepoError>> = match run_in_pool(config.jobs, || {
+        to_run
+            .par_iter()
+            .map(|url| clone_repo(url, config))
+            .collect()
+    }) {
+        Ok(results) => results,
+        Err(code) => return code,
+    };
     results.extend(failures.into_iter().map(Err));
 
     report("Cloned", &results, config.verbose)
