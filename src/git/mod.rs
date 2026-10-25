@@ -1,6 +1,7 @@
 use std::{io, process};
 
 pub mod clone;
+pub mod command;
 pub mod sync;
 
 /// Verify that `git` is available on `PATH`, by attempting to spawn `git

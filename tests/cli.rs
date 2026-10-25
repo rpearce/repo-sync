@@ -279,3 +279,57 @@ fn successful_sync_is_silent_by_default() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(stdout.is_empty(), "stdout must be empty, got: {stdout:?}");
 }
+
+/// `-v`/`--verbose` must be a global flag: it must parse whether it comes
+/// before or after the subcommand. Regression test for the clap builder
+/// CLI, where `verbose` was defined per-subcommand, so `-v` placed before
+/// the subcommand was rejected by clap itself (exit 2, "unexpected
+/// argument") instead of reaching `repo-sync`'s own error handling.
+#[test]
+fn verbose_is_global() {
+    let env = TestEnv::new();
+    let missing = env.root().join("nope.txt");
+    let out = env.root().join("out");
+
+    let assert = env
+        .repo_sync()
+        .args(["-v", "sync", "-f"])
+        .arg(&missing)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .failure()
+        .code(1);
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("cannot read repo list"),
+        "a global '-v' before the subcommand must still reach repo-sync's \
+         own error handling, not clap's usage error, got: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "clap must accept '-v' before the subcommand now that it's global, got: {stderr:?}"
+    );
+}
+
+/// Running `repo-sync` with no arguments at all must print help and exit
+/// with clap's usage-error code (2), the same as today's builder-based
+/// CLI: a derive `Cli` with a non-`Option` `#[command(subcommand)]` field
+/// implies `subcommand_required` and `arg_required_else_help`, matching
+/// the builder's explicit `.subcommand_required(true).arg_required_else_help(true)`.
+#[test]
+fn no_args_prints_help_and_exits_2() {
+    let env = TestEnv::new();
+
+    let assert = env.repo_sync().assert().failure().code(2);
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("Usage:"),
+        "stderr must contain help/usage text, got: {stderr:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(stdout.is_empty(), "stdout must be empty, got: {stdout:?}");
+}

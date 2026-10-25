@@ -1,6 +1,5 @@
 use std::{path::Path, process::ExitCode};
 
-use clap;
 use rayon::prelude::*;
 
 use crate::commands::{partition_collisions, read_repo_list, report, unique_entry_count};
@@ -9,33 +8,6 @@ use crate::error::RepoError;
 use crate::git::clone::git_clone;
 use crate::utils::repo_list::parse_repo_list;
 use crate::utils::url::{normalize, repo_name};
-
-/// Returns the `clap::Command` spec for the `clone` subcommand.
-pub fn command() -> clap::Command {
-    clap::Command::new("clone")
-        .about("Clone repositories from a file into an output directory")
-        .arg(
-            clap::Arg::new("file")
-                .short('f')
-                .long("file")
-                .help("Repository list file")
-                .required(true),
-        )
-        .arg(
-            clap::Arg::new("out")
-                .short('o')
-                .long("out")
-                .help("Output directory")
-                .required(true),
-        )
-        .arg(
-            clap::Arg::new("verbose")
-                .short('v')
-                .long("verbose")
-                .help("Enable verbose output")
-                .action(clap::ArgAction::SetTrue),
-        )
-}
 
 /// Clone a repository only if it doesn't already exist.
 /// - `url`: repository URL
