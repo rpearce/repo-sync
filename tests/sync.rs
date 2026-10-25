@@ -596,3 +596,56 @@ fn sync_ignores_inherited_git_dir() {
     assert_eq!(env.git(&hook_repo, &["rev-parse", "HEAD"]), hook_head);
     assert_eq!(env.git(&fx.clone, &["rev-parse", "HEAD"]), remote_head);
 }
+
+/// A non-current branch that is only ahead of its upstream (unpushed
+/// commits, nothing new upstream) has nothing to fast-forward, so `sync`
+/// must leave it alone without a warning.
+#[test]
+fn sync_does_not_warn_for_branch_only_ahead_of_upstream() {
+    let env = TestEnv::new();
+    let remote = env.bare_remote("dotfiles");
+    env.push_commit(&remote, "feature", "feature commit 1");
+    let fx = env.clone_remote(&remote);
+
+    // Local `feature`, tracking `origin/feature`, gets a commit the remote
+    // never sees.
+    env.git(&fx.clone, &["branch", "feature", "origin/feature"]);
+    env.git(&fx.clone, &["checkout", "feature"]);
+    fs::write(fx.clone.join("local-feature.txt"), "local feature change\n")
+        .expect("write local feature file");
+    env.git(&fx.clone, &["add", "."]);
+    env.git(&fx.clone, &["commit", "-m", "local feature commit"]);
+    let local_feature_sha = env.git(&fx.clone, &["rev-parse", "feature"]);
+    env.git(&fx.clone, &["checkout", "main"]);
+
+    let assert = env.run("sync", &fx.repos, &fx.out).success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        !stderr.contains("warning"),
+        "a branch that is only ahead of its upstream must not warn, got: {stderr:?}"
+    );
+    assert_eq!(
+        env.git(&fx.clone, &["rev-parse", "feature"]),
+        local_feature_sha
+    );
+}
+
+/// A clone of a remote that was empty at the time must pick up the remote's
+/// commits on a later `sync`, once it has some.
+#[test]
+fn sync_populates_clone_of_empty_remote_once_it_has_commits() {
+    let env = TestEnv::new();
+    let remote = env.empty_bare_remote("dotfiles");
+    let fx = env.clone_remote(&remote);
+
+    let remote_head = env.push_commit(&remote, "main", "first commit");
+
+    env.run("sync", &fx.repos, &fx.out).success();
+
+    // Checked out, not just pointed at: the commit's file is in the work
+    // tree and nothing is left staged or modified
+    assert_eq!(env.git(&fx.clone, &["rev-parse", "HEAD"]), remote_head);
+    assert!(fx.clone.join("history.txt").exists());
+    assert_eq!(env.git(&fx.clone, &["status", "--porcelain"]), "");
+}

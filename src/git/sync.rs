@@ -99,10 +99,13 @@ fn print_branch_update_output(repo: &str, output: &str) {
 /// Current branch: fast-forward merge (`merge --ff-only`) if there are no
 /// tracked-file modifications; untracked files never block it, since
 /// `merge --ff-only` itself refuses to overwrite one that's in the way.
-/// Other branches: update directly from upstream without checkout. A
-/// diverged/non-fast-forwardable branch (current or not) is reported as
-/// one attributed warning (see `warn_branch_update_failed`) rather than
-/// silently ignored or left as git's own unattributed stderr noise.
+/// An unborn current branch (no commits yet) is fast-forwarded onto its
+/// upstream once that has commits.
+/// Other branches behind their upstream: update directly from upstream
+/// without checkout. A diverged/non-fast-forwardable branch (current or
+/// not) is reported as one attributed warning (see
+/// `warn_branch_update_failed`) rather than silently ignored or left as
+/// git's own unattributed stderr noise.
 /// - `path`: local repository directory
 /// - `config`: command configuration
 fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
@@ -189,70 +192,26 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
         if Some(local_ref) == current_branch_ref.as_deref() {
             // Current branch: merge from upstream if there are no tracked
             // modifications.
-
-            // Check for tracked modifications using
-            // `git status --porcelain --untracked-files=no`. Untracked
-            // files are deliberately excluded: counting them as "dirty"
-            // would block fast-forwards that are safe, and
-            // `merge --ff-only` itself refuses to overwrite an untracked
-            // file that's actually in the way.
-            // Fail closed: if the status check itself fails, we must not
-            // treat that as "clean" and merge anyway.
-            let status_out =
-                command::git_output(path, &["status", "--porcelain", "--untracked-files=no"])
-                    .map_err(|e| {
-                        command::command_failed(
-                            "git status --porcelain --untracked-files=no",
-                            path,
-                            e,
-                        )
-                    })?;
-
-            let clean = status_out.is_empty();
-
-            if clean {
-                // Safe fast-forward merge from upstream branch. Captured
-                // (not inherited) so a failure can be attributed to this
-                // repo and branch in one line instead of raw,
-                // unattributed git noise. `-c advice.diverging=false`
-                // suppresses ~10 lines of generic hint text about a
-                // diverged branch that this warning already explains.
-                // Non-fatal: a failed fast-forward is a warning, not a
-                // failure (see the error taxonomy). On success, verbose
-                // mode still shows git's own output (e.g. `Updating a..b`
-                // / `Fast-forward`), attributed to this repo, instead of
-                // capturing it only to throw it away.
-                match command::git_output_combined(
-                    path,
-                    &[
-                        "-c",
-                        "advice.diverging=false",
-                        "merge",
-                        "--ff-only",
-                        upstream_ref,
-                    ],
-                ) {
-                    Ok(output) => {
-                        if config.verbose {
-                            print_branch_update_output(repo, &output);
-                        }
-                    }
-                    Err(e) => warn_branch_update_failed(repo, local, &e),
-                }
-            } else if config.verbose {
-                // Working tree dirty: skip merge to avoid conflicts
-                println!("{repo}: Skipping merge on {local} (dirty branch)");
-            }
+            fast_forward_current_branch(path, repo, local, upstream_ref, config)?;
         } else {
             // Non-current branch: update directly from upstream without
             // checkout. Equivalent to: `git fetch . <upstream-full>:<local-full>`.
             // Captured (not inherited), for the same reason as the merge
-            // above: a non-fast-forward here (e.g. a diverged branch) is
-            // a warning, not a failure (a `[gone]` upstream never reaches
-            // this point at all; it's skipped above). `fetch` writes its
-            // progress (`From . ... -> feature`) to stderr even on
-            // success, so verbose mode needs the combined output to show
-            // it, attributed to this repo.
+            // in `fast_forward_current_branch`: a non-fast-forward here
+            // (e.g. a diverged branch) is a warning, not a failure (a
+            // `[gone]` upstream never reaches this point at all; it's
+            // skipped above). `fetch` writes its progress
+            // (`From . ... -> feature`) to stderr even on success, so
+            // verbose mode needs the combined output to show it,
+            // attributed to this repo.
+
+            // Nothing to update unless the upstream has commits this branch
+            // doesn't: `fetch .` would reject an up-to-date or only-ahead
+            // branch as non-fast-forward
+            if !track.contains("behind") {
+                continue;
+            }
+
             let refspec = format!("{upstream_ref}:{local_ref}");
             match command::git_output_combined(path, &["fetch", ".", &refspec]) {
                 Ok(output) => {
@@ -263,6 +222,100 @@ fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {
                 Err(e) => warn_branch_update_failed(repo, local, &e),
             }
         }
+    }
+
+    // Step 5: An unborn current branch (e.g. in a clone of a remote that was
+    // empty at the time) has no ref yet, so `for-each-ref` didn't list it.
+    // Once its upstream has commits, fast-forward onto them; until then
+    // `@{upstream}` doesn't resolve and there's nothing to do.
+    if let Some(current_ref) = &current_branch_ref {
+        let listed = branch_pairs
+            .lines()
+            .any(|line| line.split('\0').next().map(str::trim) == Some(current_ref.as_str()));
+        if !listed
+            && let Ok(upstream_ref) = command::git_output(
+                path,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
+            )
+        {
+            let local = current_ref
+                .strip_prefix("refs/heads/")
+                .unwrap_or(current_ref);
+            fast_forward_current_branch(path, repo, local, upstream_ref.trim(), config)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Fast-forward the checked-out branch `local` to `upstream_ref`, unless it
+/// has tracked modifications. A fast-forward git refuses (e.g. a diverged
+/// branch) is reported as one attributed warning, not a failure.
+/// - `path`: local repository directory
+/// - `repo`: repository name, for messages
+/// - `local`: current branch name, for messages
+/// - `upstream_ref`: full refname of the branch's upstream
+/// - `config`: command configuration
+fn fast_forward_current_branch(
+    path: &Path,
+    repo: &str,
+    local: &str,
+    upstream_ref: &str,
+    config: &Config,
+) -> io::Result<()> {
+    // Check for tracked modifications using
+    // `git status --porcelain --untracked-files=no`. Untracked
+    // files are deliberately excluded: counting them as "dirty"
+    // would block fast-forwards that are safe, and
+    // `merge --ff-only` itself refuses to overwrite an untracked
+    // file that's actually in the way.
+    // Fail closed: if the status check itself fails, we must not
+    // treat that as "clean" and merge anyway.
+    let status_out = command::git_output(path, &["status", "--porcelain", "--untracked-files=no"])
+        .map_err(|e| {
+            command::command_failed("git status --porcelain --untracked-files=no", path, e)
+        })?;
+
+    let clean = status_out.is_empty();
+
+    if clean {
+        // Safe fast-forward merge from upstream branch. Captured
+        // (not inherited) so a failure can be attributed to this
+        // repo and branch in one line instead of raw,
+        // unattributed git noise. `-c advice.diverging=false`
+        // suppresses ~10 lines of generic hint text about a
+        // diverged branch that this warning already explains.
+        // Non-fatal: a failed fast-forward is a warning, not a
+        // failure (see the error taxonomy). On success, verbose
+        // mode still shows git's own output (e.g. `Updating a..b`
+        // / `Fast-forward`), attributed to this repo, instead of
+        // capturing it only to throw it away.
+        match command::git_output_combined(
+            path,
+            &[
+                "-c",
+                "advice.diverging=false",
+                "merge",
+                "--ff-only",
+                upstream_ref,
+            ],
+        ) {
+            Ok(output) => {
+                if config.verbose {
+                    print_branch_update_output(repo, &output);
+                }
+            }
+            Err(e) => warn_branch_update_failed(repo, local, &e),
+        }
+    } else if config.verbose {
+        // Working tree dirty: skip merge to avoid conflicts
+        println!("{repo}: Skipping merge on {local} (dirty branch)");
     }
 
     Ok(())
