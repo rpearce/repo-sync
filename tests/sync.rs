@@ -139,6 +139,104 @@ fn sync_fast_forwards_current_branch_with_only_untracked_files() {
     assert_eq!(local_head_after, remote_head);
 }
 
+/// `sync` must never run git inside a directory that isn't itself a git
+/// repository: git's own repository discovery walks up from `-C <dir>`
+/// looking for the nearest enclosing `.git`, so treating "the target
+/// directory exists" as "the target is our clone" let `sync` silently
+/// fetch and fast-forward whatever repository `out` happened to be
+/// sitting inside. Regression test for that bug, reproduced two ways in
+/// one run: a leftover non-repo directory left over inside `out`, and a
+/// bare-host entry with no path at all (which the old name-derivation
+/// resolved to the empty string, and `Path::join("")` resolves to `out`
+/// itself).
+#[test]
+fn sync_never_operates_on_enclosing_repo() {
+    let env = TestEnv::new();
+
+    // An ordinary git repo that has nothing to do with repo-sync, whose
+    // own remote is about to move. `out` will live inside its working
+    // tree, standing in for "some unrelated repo the user happened to
+    // run repo-sync from inside".
+    let enclosing_remote = env.bare_remote("enclosing");
+    let enclosing = env.root().join("enclosing");
+    env.git(
+        env.root(),
+        &[
+            "clone",
+            enclosing_remote.to_str().expect("utf-8 path"),
+            enclosing.to_str().expect("utf-8 path"),
+        ],
+    );
+    let enclosing_head_before = env.git(&enclosing, &["rev-parse", "HEAD"]);
+
+    // Advance the enclosing repo's own remote. If `sync` ever ran git
+    // inside (or above) `out`, git's repository discovery would find
+    // `enclosing`'s `.git` and this commit would land on its HEAD.
+    env.push_commit(&enclosing_remote, "main", "enclosing upstream commit");
+
+    let out = enclosing.join("out");
+    let leftover = out.join("leftover");
+    fs::create_dir_all(&leftover).expect("create leftover non-repo dir inside out");
+
+    let repos = env.repos_file(
+        "repos.txt",
+        &[
+            // Resolves to the pre-existing plain directory above, which
+            // is not a git repo: `sync` must fail closed instead of
+            // running git there.
+            "example.test/leftover",
+            // A bare host with no path segment at all: `repo_name` must
+            // reject it (`None`) rather than resolve it to the empty
+            // name, which `Path::join` would turn into `out` itself.
+            "example.test/",
+        ],
+    );
+
+    let assert = env.run("sync", &repos, &out).failure().code(1);
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("exists but is not a git repository"),
+        "stderr must report the non-repo directory, got: {stderr:?}"
+    );
+
+    let enclosing_head_after = env.git(&enclosing, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        enclosing_head_after, enclosing_head_before,
+        "sync must never move the enclosing repo's HEAD"
+    );
+}
+
+/// Directory-name collisions must be caught through `sync` the same way
+/// they are through `clone` — both share `partition_collisions` (see
+/// `tests/cli.rs`'s `duplicate_repo_names_are_reported_not_raced`), and
+/// this pins that wiring so a future refactor can't silently reintroduce
+/// the race for `sync` alone.
+#[test]
+fn sync_reports_duplicate_repo_names_instead_of_racing() {
+    let env = TestEnv::new();
+    let remote_a = env.bare_remote("a/dotfiles");
+    let remote_b = env.bare_remote("b/dotfiles");
+    let url_a = env.file_url(&remote_a);
+    let url_b = env.file_url(&remote_b);
+    let repos = env.repos_file("repos.txt", &[&url_a, &url_b]);
+    let out = env.root().join("out");
+
+    let assert = env.run("sync", &repos, &out).failure().code(1);
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains(&format!(
+            "'dotfiles' is used by multiple entries: {url_a}, {url_b}"
+        )),
+        "stderr must name both colliding entries, got: {stderr:?}"
+    );
+    assert!(
+        !out.join("dotfiles").exists(),
+        "colliding entries must not create out/dotfiles"
+    );
+}
+
 /// `sync` must never delete a local tag that was never pushed to the
 /// remote. Regression test for the bug where `git fetch --all -Pp`
 /// includes `--prune-tags`, which deletes any local tag the remote

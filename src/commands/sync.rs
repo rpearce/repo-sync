@@ -1,10 +1,13 @@
-use std::fs;
+use std::process::ExitCode;
 
 use clap;
 use rayon::prelude::*;
 
+use crate::commands::{partition_collisions, read_repo_list, report, unique_entry_count};
 use crate::config::Config;
+use crate::error::RepoError;
 use crate::git::sync::sync_repo;
+use crate::utils::repo_list::parse_repo_list;
 
 /// Returns the `clap::Command` spec for the `sync` subcommand.
 pub fn command() -> clap::Command {
@@ -35,17 +38,30 @@ pub fn command() -> clap::Command {
 
 /// Runs the `sync` command.
 /// - `config`: command configuration
-pub fn run(config: &Config) {
-    let content = fs::read_to_string(&config.repos_file).expect("Failed to read repo list file");
-    let repos: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+///
+/// Returns `ExitCode::FAILURE` (without syncing anything) if the repo
+/// list can't be read, or if any repository fails to clone or sync.
+pub fn run(config: &Config) -> ExitCode {
+    let content = match read_repo_list(config) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    let repos = parse_repo_list(&content);
+    let (to_run, failures) = partition_collisions(&repos);
 
     if config.verbose {
         println!(
             "Syncing {} repositories in {:?}",
-            repos.len(),
+            unique_entry_count(&to_run, &failures),
             config.output_dir
         );
     }
 
-    repos.par_iter().for_each(|url| sync_repo(url, config));
+    let mut results: Vec<Result<(), RepoError>> = to_run
+        .par_iter()
+        .map(|url| sync_repo(url, config))
+        .collect();
+    results.extend(failures.into_iter().map(Err));
+
+    report("Synced", &results, config.verbose)
 }

@@ -1,7 +1,10 @@
+use std::process::ExitCode;
+
 use clap::Command;
 
 mod commands;
 mod config;
+mod error;
 mod git;
 mod utils;
 
@@ -20,9 +23,13 @@ use config::Config;
 /// Example:
 ///   repo-sync clone -f repos.txt -o ./repos
 ///   repo-sync sync -f repos.txt -o ./repos
-fn main() {
+///
+/// Exits with code 1 if the repo list can't be read, `git` isn't on
+/// `PATH`, or any repository fails to clone or sync. Clap's own usage
+/// errors (e.g. a missing required argument) exit with code 2.
+fn main() -> ExitCode {
     let matches = Command::new("repo-sync")
-        .version("0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Robert Pearce <me@robertwpearce.com>")
         .about("Clone or sync multiple git repositories from a file")
         .subcommand_required(true)
@@ -31,21 +38,26 @@ fn main() {
         .subcommand(commands::sync::command())
         .get_matches();
 
+    if let Err(e) = git::preflight() {
+        eprintln!("error: git not found on PATH ({e})");
+        return ExitCode::FAILURE;
+    }
+
     match matches.subcommand() {
         Some(("clone", sub_m)) => {
             let file = sub_m.get_one::<String>("file").unwrap();
             let out = sub_m.get_one::<String>("out").unwrap();
             let verbose = sub_m.get_flag("verbose");
             let config = Config::new(file, out).with_verbose(verbose);
-            commands::clone::run(&config);
+            commands::clone::run(&config)
         }
         Some(("sync", sub_m)) => {
             let file = sub_m.get_one::<String>("file").unwrap();
             let out = sub_m.get_one::<String>("out").unwrap();
             let verbose = sub_m.get_flag("verbose");
             let config = Config::new(file, out).with_verbose(verbose);
-            commands::sync::run(&config);
+            commands::sync::run(&config)
         }
         _ => unreachable!("Subcommand required"),
-    };
+    }
 }

@@ -199,7 +199,28 @@ github.com/user/repo2
 github.com/user/repo3
 ```
 
-Repo lines can be prefixed with `https://` and/or end with `.git`, if preferred.
+- One entry per line.
+- Blank lines and lines starting with `#` are ignored; leading and
+  trailing whitespace is trimmed from every line.
+- Each entry can be:
+  - a bare `host/owner/repo` (gets `https://` prepended);
+  - a full `https://` URL;
+  - a full `http://` URL (upgraded to `https://`);
+  - a full `ssh://` URL;
+  - an scp-style SSH remote, e.g. `git@host:owner/repo.git`;
+  - a `file://` URL;
+  - a local path, starting with `/` or `.`.
+- A bare `host:port/owner/repo` entry is treated as scp-style (this is
+  git's own rule for telling scp-style remotes from paths), so a custom
+  port needs an explicit `https://` or `ssh://` URL, e.g.
+  `ssh://git@host:2222/owner/repo.git`.
+- The local directory an entry is cloned into is named after the last
+  path segment of the entry, with any trailing `.git` removed. An entry
+  that has no such segment (e.g. a bare host with no path) is an error,
+  and two *different* entries that resolve to the same directory name
+  are also an error. Two entries that normalize to the exact same URL
+  (e.g. the same line listed twice) aren't treated as an error: the
+  repeat is ignored with a warning, and the entry is only cloned once.
 
 ## Releases
 
