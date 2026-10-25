@@ -101,10 +101,10 @@ fn print_branch_update_output(repo: &str, output: &str) {
 /// An unborn current branch (no commits yet) is fast-forwarded onto its
 /// upstream once that has commits.
 /// Other branches behind their upstream: update directly from upstream
-/// without checkout. A
-/// diverged/non-fast-forwardable branch (current or not) is reported as
-/// one attributed warning (see `warn_branch_update_failed`) rather than
-/// silently ignored or left as git's own unattributed stderr noise.
+/// without checkout. A diverged/non-fast-forwardable branch (current or
+/// not) is reported as one attributed warning (see
+/// `warn_branch_update_failed`) rather than silently ignored or left as
+/// git's own unattributed stderr noise.
 /// - `path`: local repository directory
 /// - `config`: command configuration
 fn sync_repo_branches(path: &Path, config: &Config) -> io::Result<()> {

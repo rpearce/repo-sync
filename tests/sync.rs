@@ -544,5 +544,9 @@ fn sync_populates_clone_of_empty_remote_once_it_has_commits() {
 
     env.run("sync", &fx.repos, &fx.out).success();
 
+    // Checked out, not just pointed at: the commit's file is in the work
+    // tree and nothing is left staged or modified
     assert_eq!(env.git(&fx.clone, &["rev-parse", "HEAD"]), remote_head);
+    assert!(fx.clone.join("history.txt").exists());
+    assert_eq!(env.git(&fx.clone, &["status", "--porcelain"]), "");
 }
