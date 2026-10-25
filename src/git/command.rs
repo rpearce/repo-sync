@@ -150,7 +150,8 @@ pub fn git_run(dir: &Path, args: &[&str], verbose: bool) -> io::Result<()> {
     }
 }
 
-/// Run `git clone <url> <path>`, with the same isolation as `git`
+/// Run `git clone -- <url> <path>` (`--` keeps an entry that starts with
+/// `-` from being read as an option), with the same isolation as `git`
 /// (see `isolate`) but without `-C`: unlike every other command in
 /// this module, clone has no existing directory to change into first
 /// (it creates `path`, including any missing parent directories,
@@ -159,14 +160,15 @@ pub fn git_run(dir: &Path, args: &[&str], verbose: bool) -> io::Result<()> {
 /// instead of consulting `QUIET_SUBCOMMANDS`.
 /// - `url`: repository URL
 /// - `path`: local repository target directory
-/// - `verbose`: when false, appends `--quiet`
+/// - `verbose`: when false, adds `--quiet`
 pub fn run_clone(url: &str, path: &Path, verbose: bool) -> io::Result<()> {
     let mut cmd = process::Command::new("git");
     isolate(&mut cmd);
-    cmd.arg("clone").arg(url).arg(path);
+    cmd.arg("clone");
     if !verbose {
         cmd.arg("--quiet");
     }
+    cmd.arg("--").arg(url).arg(path);
 
     let status = cmd.status()?;
     if status.success() {
