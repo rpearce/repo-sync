@@ -7,12 +7,14 @@ use crate::config::Config;
 /// - `path`: local repository target directory
 /// - `config`: command configuration
 pub fn git_clone(url: &str, path: &PathBuf, config: &Config) -> io::Result<()> {
-    // Spawn a `git clone <url> <path>` process and wait for it to finish
+    // Spawn a `git clone -- <url> <path>` process and wait for it to finish
+    // `--` keeps an entry that starts with `-` from being read as an option
     let mut clone_cmd = process::Command::new("git");
-    clone_cmd.arg("clone").arg(url).arg(path);
+    clone_cmd.arg("clone");
     if !config.verbose {
         clone_cmd.arg("--quiet");
     }
+    clone_cmd.arg("--").arg(url).arg(path);
 
     let status = clone_cmd.status()?;
 

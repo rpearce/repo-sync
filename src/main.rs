@@ -11,7 +11,7 @@ use config::Config;
 ///
 /// Defines two subcommands:
 /// - `clone`: clone repositories listed in a file into an output directory
-/// - `sync`: update existing repositories (pull + branch fast-forward)
+/// - `sync`: update existing repositories (fetch + fast-forward, never `git pull`)
 ///
 /// Each subcommand requires:
 /// - `--file` / `-f`: path to a text file containing one repo URL per line

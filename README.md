@@ -111,7 +111,7 @@ main
 ## Features
 
 - Clone multiple repositories from a text file of URLs.
-- Pull updates and fast-forward branches for existing repositories.
+- Fetch and fast-forward branches for existing repositories (never `git pull`).
 - Cross-platform compatible (Linux, macOS, Windows).
 
 ## Installation
@@ -173,8 +173,8 @@ repo-sync sync -f repos.txt -o ./repos
 - `-o, --out`: Output directory to clone repositories into.
 
 - Clones any repositories that aren't found locally.
-- Pulls latest changes for the repositories.
-- Fast-forward merges current branches if the working tree is clean.
+- Fetches all remotes, pruning deleted remote branches.
+- Fast-forwards the current branch (never merges or rebases); skipped when tracked files are modified.
 - Updates any other branches from upstream without checking them out.
 
 ### Clone repositories
