@@ -112,7 +112,9 @@ main
 
 - Clone multiple repositories from a text file of URLs.
 - Fetch and fast-forward branches for existing repositories (never `git pull`).
-- Cross-platform compatible (Linux, macOS, Windows).
+- Process repositories in parallel; the number of jobs is configurable with `-j`/`--jobs` (defaults to the number of CPUs).
+- Never prompts on the terminal for HTTPS credentials, so an unattended run fails fast instead of hanging (see [Credentials and prompts](#credentials-and-prompts)).
+- Prebuilt binaries for Linux (x86_64 glibc/musl) and macOS (x86_64/arm64); other platforms are untested but may build from source.
 
 ## Installation
 
@@ -163,6 +165,28 @@ cargo install --path .
 
 ## Usage
 
+```bash
+repo-sync <clone|sync> -f repos.txt -o ./repos
+```
+
+### Global options
+
+These apply to both subcommands and may appear before or after them:
+
+- `-v, --verbose`: Print the run's header line, a few informational
+  lines, and the summary line on stdout when the run succeeds.
+  Attribution is partial: a branch-level fast-forward or fetch, a
+  skipped dirty current branch, and a skipped `[gone]` upstream are each
+  printed as `<repo>: <line>`; an existing clone being skipped is named
+  by entry only, without that `<repo>: ` prefix; and `git clone` and
+  `git fetch --all` inherit the terminal directly (they're passed
+  `--quiet` without `-v`), so their own output appears unattributed to
+  any repository. Without `-v`, stdout gets nothing; warnings (e.g. a
+  duplicate entry, a diverged branch) still go to stderr regardless.
+- `-j, --jobs <N>`: Limit how many repositories are processed in
+  parallel. Defaults to the number of CPUs; `RAYON_NUM_THREADS` also
+  works. `0` is rejected.
+
 ### Sync repositories
 
 ```bash
@@ -172,10 +196,27 @@ repo-sync sync -f repos.txt -o ./repos
 - `-f, --file`: Path to a text file containing one repository URL per line.
 - `-o, --out`: Output directory to clone repositories into.
 
-- Clones any repositories that aren't found locally.
-- Fetches all remotes, pruning deleted remote branches.
-- Fast-forwards the current branch (never merges or rebases); skipped when tracked files are modified.
-- Updates any other branches from upstream without checking them out.
+For each entry:
+
+- Clones the repository if it isn't found locally.
+- Fails if the target directory already exists but isn't a git repository.
+- Otherwise, updates the existing clone:
+  - Fetches all remotes with `--prune`, which removes deleted
+    remote-tracking branches. `repo-sync` doesn't request tag pruning
+    itself, but a `fetch.pruneTags` (or `remote.<name>.pruneTags`)
+    setting in your own git config still applies and can delete local
+    tags.
+  - Fast-forwards the current branch only (`merge --ff-only`; never
+    merges or rebases), and skips it when tracked files are modified.
+    Untracked files don't count as modifications (git still refuses to
+    overwrite one that's in the way).
+  - Fast-forwards every other local branch directly from its upstream,
+    without checking it out.
+  - Skips a branch whose upstream is gone (deleted on the remote); shown
+    as an informational line only with `-v`.
+  - A branch that can't be fast-forwarded (e.g. it has diverged) prints
+    an attributed `warning:` line and is left alone; this never fails
+    the run.
 
 ### Clone repositories
 
@@ -186,8 +227,44 @@ repo-sync clone -f repos.txt -o ./repos
 - `-f, --file`: Path to a text file containing one repository URL per line.
 - `-o, --out`: Output directory to clone repositories into.
 
-- Used for only doing multi-repository cloning.
+- Clones every entry that isn't already present locally.
+- An entry whose directory already exists is skipped (not re-fetched or
+  verified as a git repository) and still counts as "ok" in the summary.
 
+### Exit status
+
+- `0`: every repository succeeded.
+- `1`: any of the following:
+  - the repo-list file can't be read;
+  - `git` isn't on `PATH`;
+  - the thread pool for `-j`/`--jobs` fails to build;
+  - one or more repositories failed to clone/sync — this is the only
+    case where the summary line is printed, to stderr, regardless of
+    `-v`; the other three cases print just their own error line.
+
+  A warning (e.g. a diverged branch, a duplicate entry) or a skipped
+  `[gone]` upstream (noted only with `-v`) never causes this.
+- `2`: a command-line usage error (e.g. a missing required argument, or
+  no arguments at all). `--help` and `--version` exit `0`.
+
+The summary line's format is:
+
+```
+<Cloned|Synced> <N> repositories: <ok> ok, <failed> failed
+```
+
+### Credentials and prompts
+
+`repo-sync` never prompts on the terminal for HTTPS credentials — every
+git invocation sets `GIT_TERMINAL_PROMPT=0` and closes stdin — so an
+HTTPS remote that needs a username/password fails immediately instead
+of hanging. This only suppresses git's own built-in terminal prompt: a
+configured credential helper or askpass program (`GIT_ASKPASS`,
+`core.askPass`, `SSH_ASKPASS`, a GUI credential manager) still runs and
+can still prompt, and it doesn't cover SSH's own prompts (host-key
+verification, a passphrase-protected key), which read the controlling
+terminal directly rather than stdin. Set up `ssh-agent`, or configure
+`BatchMode`, for those remotes so they don't hang either.
 
 ### File format
 
@@ -200,27 +277,29 @@ github.com/user/repo3
 ```
 
 - One entry per line.
-- Blank lines and lines starting with `#` are ignored; leading and
-  trailing whitespace is trimmed from every line.
-- Each entry can be:
+- Blank lines and lines starting with `#` are ignored. Comments are
+  whole-line only: a `#` elsewhere on a line, e.g. after an entry, is
+  treated as part of the entry, not a comment. Leading and trailing
+  whitespace is trimmed from every line.
+- An entry can be, among other forms:
   - a bare `host/owner/repo` (gets `https://` prepended);
-  - a full `https://` URL;
-  - a full `http://` URL (upgraded to `https://`);
-  - a full `ssh://` URL;
   - an scp-style SSH remote, e.g. `git@host:owner/repo.git`;
-  - a `file://` URL;
-  - a local path, starting with `/` or `.`.
+  - a local path, starting with `/` or `.` (`~` is **not** expanded, so
+    use an absolute path or one starting with `.` instead);
+  - any URL with a scheme (`https://`, `ssh://`, `git://`, `file://`,
+    etc.), used as-is — except `http://`, which is upgraded to `https://`.
 - A bare `host:port/owner/repo` entry is treated as scp-style (this is
   git's own rule for telling scp-style remotes from paths), so a custom
   port needs an explicit `https://` or `ssh://` URL, e.g.
   `ssh://git@host:2222/owner/repo.git`.
 - The local directory an entry is cloned into is named after the last
-  path segment of the entry, with any trailing `.git` removed. An entry
-  that has no such segment (e.g. a bare host with no path) is an error,
-  and two *different* entries that resolve to the same directory name
-  are also an error. Two entries that normalize to the exact same URL
-  (e.g. the same line listed twice) aren't treated as an error: the
-  repeat is ignored with a warning, and the entry is only cloned once.
+  path segment of the entry, with a trailing `.git` removed (only one —
+  `repo.git.git` becomes `repo.git`, not `repo`). An entry that has no
+  such segment (e.g. a bare host with no path) is an error, and two
+  *different* entries that resolve to the same directory name are also
+  an error. Two entries that normalize to the exact same URL (e.g. the
+  same line listed twice) aren't treated as an error: the repeat is
+  ignored with a warning, and the entry is only processed once.
 
 ## Releases
 

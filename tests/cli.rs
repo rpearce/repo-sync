@@ -313,11 +313,34 @@ fn verbose_is_global() {
     );
 }
 
+/// `-j`/`--jobs` must be accepted as a global flag and actually bound the
+/// parallel phase without breaking a normal run: `sync -j 1` (the most
+/// constrained non-zero value) over two good entries must still succeed.
+#[test]
+fn sync_with_jobs_flag_succeeds() {
+    let env = TestEnv::new();
+    let remote_a = env.bare_remote("a");
+    let remote_b = env.bare_remote("b");
+    let url_a = env.file_url(&remote_a);
+    let url_b = env.file_url(&remote_b);
+    let repos = env.repos_file("repos.txt", &[&url_a, &url_b]);
+    let out = env.root().join("out");
+
+    env.run_with("sync", &repos, &out, &["-j", "1"]).success();
+
+    assert!(
+        out.join("a").exists(),
+        "-j 1 must still clone the first entry"
+    );
+    assert!(
+        out.join("b").exists(),
+        "-j 1 must still clone the second entry"
+    );
+}
+
 /// Running `repo-sync` with no arguments at all must print help and exit
-/// with clap's usage-error code (2), the same as today's builder-based
-/// CLI: a derive `Cli` with a non-`Option` `#[command(subcommand)]` field
-/// implies `subcommand_required` and `arg_required_else_help`, matching
-/// the builder's explicit `.subcommand_required(true).arg_required_else_help(true)`.
+/// with clap's usage-error code (2): a non-`Option` `#[command(subcommand)]`
+/// field implies `subcommand_required` and `arg_required_else_help`.
 #[test]
 fn no_args_prints_help_and_exits_2() {
     let env = TestEnv::new();
