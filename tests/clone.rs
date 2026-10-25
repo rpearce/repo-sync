@@ -11,7 +11,7 @@ use common::TestEnv;
 fn clone_never_passes_an_entry_to_git_as_an_option() {
     let env = TestEnv::new();
     let marker = env.root().join("injected");
-    let entry = format!("--upload-pack=touch {};://h/a:b", marker.display());
+    let entry = format!("--upload-pack=touch '{}';://h/a:b", marker.display());
     let repos = env.repos_file("repos.txt", &[&entry]);
 
     let _ = env.run("clone", &repos, &env.root().join("out"));
